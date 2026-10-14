@@ -20,7 +20,7 @@ public class ProductRepository {
     return jdbcTemplate.query("""
         SELECT id, product_code, product_name, category, spec, model, unit,
           manufacturer, registration_no, udi_code, price, medium_package, large_package,
-          zc_local_code, hospital_contract_code, status
+          zc_local_code, hospital_contract_code, brand, distributor, status
         FROM biz_product
         WHERE tenant_id = ? AND deleted = 0
         ORDER BY id ASC
@@ -31,7 +31,7 @@ public class ProductRepository {
     return jdbcTemplate.query("""
         SELECT id, product_code, product_name, category, spec, model, unit,
           manufacturer, registration_no, udi_code, price, medium_package, large_package,
-          zc_local_code, hospital_contract_code, status
+          zc_local_code, hospital_contract_code, brand, distributor, status
         FROM biz_product
         WHERE tenant_id = ? AND id = ? AND deleted = 0
         """, this::mapProduct, tenantId, id).stream().findFirst();
@@ -42,8 +42,8 @@ public class ProductRepository {
         INSERT INTO biz_product (
           id, tenant_id, product_code, product_name, category, spec, model,
           unit, manufacturer, registration_no, udi_code, price, medium_package, large_package,
-          zc_local_code, hospital_contract_code, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          zc_local_code, hospital_contract_code, brand, distributor, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         id,
         tenantId,
@@ -61,6 +61,8 @@ public class ProductRepository {
         resolvePackage(request.largePackage()),
         request.zcLocalCode(),
         request.hospitalContractCode(),
+        request.brand(),
+        request.distributor(),
         toDbStatus(request.status()));
   }
 
@@ -70,7 +72,7 @@ public class ProductRepository {
         SET product_code = ?, product_name = ?, category = ?, spec = ?, model = ?,
           unit = ?, manufacturer = ?, registration_no = ?, udi_code = ?,
           price = ?, medium_package = ?, large_package = ?,
-          zc_local_code = ?, hospital_contract_code = ?, status = ?, updated_time = CURRENT_TIMESTAMP
+          zc_local_code = ?, hospital_contract_code = ?, brand = ?, distributor = ?, status = ?, updated_time = CURRENT_TIMESTAMP
         WHERE tenant_id = ? AND id = ? AND deleted = 0
         """,
         resolveCode(request.code(), id),
@@ -87,6 +89,8 @@ public class ProductRepository {
         resolvePackage(request.largePackage()),
         request.zcLocalCode(),
         request.hospitalContractCode(),
+        request.brand(),
+        request.distributor(),
         toDbStatus(request.status()),
         tenantId,
         id);
@@ -115,8 +119,8 @@ public class ProductRepository {
         rs.getString("udi_code"),
         rs.getString("category"),
         rs.getString("manufacturer"),
-        "",
-        "",
+        rs.getString("distributor"),
+        rs.getString("brand"),
         1,
         0,
         "",

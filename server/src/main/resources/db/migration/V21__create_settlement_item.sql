@@ -1,0 +1,20 @@
+CREATE TABLE biz_settlement_item (
+  id BIGINT PRIMARY KEY,
+  tenant_id BIGINT NOT NULL,
+  settlement_id BIGINT NOT NULL,
+  acceptance_no VARCHAR(50) NOT NULL DEFAULT '',
+  product_id BIGINT,
+  product_code VARCHAR(50) NOT NULL,
+  product_name VARCHAR(200) NOT NULL,
+  spec VARCHAR(100) DEFAULT '',
+  batch_no VARCHAR(50) DEFAULT '',
+  registration_no VARCHAR(100) DEFAULT '',
+  qty INT NOT NULL DEFAULT 0,
+  price DECIMAL(14,2) NOT NULL DEFAULT 0,
+  amount DECIMAL(14,2) NOT NULL DEFAULT 0,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_tenant_settlement (tenant_id, settlement_id),
+  KEY idx_settlement_id (settlement_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='结算明细表';

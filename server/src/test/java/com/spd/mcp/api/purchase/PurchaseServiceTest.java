@@ -3,6 +3,7 @@ package com.spd.mcp.api.purchase;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.spd.mcp.api.approval.ApprovalAccessService;
 import com.spd.mcp.api.tenant.TenantContext;
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -17,11 +18,14 @@ class PurchaseServiceTest {
   @Mock
   private PurchaseRepository purchaseRepository;
 
+  @Mock
+  private ApprovalAccessService approvalAccessService;
+
   private final TenantContext tenantContext = new TenantContext(1L);
 
   @Test
   void purchaseDocumentCreationChainUsesCurrentTenant() {
-    PurchaseService service = new PurchaseService(purchaseRepository, tenantContext);
+    PurchaseService service = new PurchaseService(purchaseRepository, tenantContext, approvalAccessService);
     BusinessDocumentDto order = document(10L, "PO202605070001", 1);
     DeliveryEditDto deliveryEdit = deliveryEdit(20L);
     BusinessDocumentDto shipment = document(30L, "FH202605070001", 0);
@@ -50,6 +54,26 @@ class PurchaseServiceTest {
     verify(purchaseRepository).getOrCreateShipmentByDeliveryId(1L, 20L);
     verify(purchaseRepository).updateShipmentStatus(1L, 30L, 0, 1, "仅待出库发货单允许出库");
     verify(purchaseRepository).updateShipmentStatus(1L, 30L, 1, 3, "仅已出库发货单允许签收");
+  }
+
+  @Test
+  void approvingPurchasePlanChecksConfiguredScopeAndTransitionsPendingPlan() {
+    PurchaseService service = new PurchaseService(purchaseRepository, tenantContext, approvalAccessService);
+
+    service.approvePlan(42L);
+
+    verify(approvalAccessService).requireOperation(ApprovalAccessService.PURCHASE_PLAN_WORKFLOW);
+    verify(purchaseRepository).updatePlanApprovalStatus(1L, 42L, 3);
+  }
+
+  @Test
+  void rejectingPurchasePlanChecksConfiguredScopeAndTransitionsPendingPlan() {
+    PurchaseService service = new PurchaseService(purchaseRepository, tenantContext, approvalAccessService);
+
+    service.rejectPlan(42L);
+
+    verify(approvalAccessService).requireOperation(ApprovalAccessService.PURCHASE_PLAN_WORKFLOW);
+    verify(purchaseRepository).updatePlanApprovalStatus(1L, 42L, 2);
   }
 
   private DeliveryEditSaveRequest saveRequest() {

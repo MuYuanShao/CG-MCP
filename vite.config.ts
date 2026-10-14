@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from 'vite'
 import path from 'path'
 import tailwindcss from '@tailwindcss/vite'
@@ -5,16 +6,18 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [
-    // The React and Tailwind plugins are both required for Make, even if
-    // Tailwind is not being actively used – do not remove them
     react(),
     tailwindcss(),
   ],
   resolve: {
     alias: {
-      // Alias @ to the src directory
-      '@': path.resolve(__dirname, './src'),
+      '@': path.resolve(__dirname, './app'),
     },
+  },
+  test: {
+    include: ['app/**/*.test.{ts,tsx}', 'app/__tests__/**/*.test.{ts,tsx}'],
+    exclude: ['tests/**', 'node_modules/**'],
+    environment: 'jsdom',
   },
 
   // File types to support raw imports. Never add .css, .tsx, or .ts files to this.
@@ -30,8 +33,11 @@ export default defineConfig({
     },
     proxy: {
       '/api': {
-        target: process.env.VITE_DEV_API_PROXY_TARGET || 'http://localhost:8081',
+        target: process.env.VITE_DEV_API_PROXY_TARGET || 'http://localhost:8080',
         changeOrigin: true,
+        headers: {
+          'x-api-key': process.env.VITE_API_KEY || '',
+        },
       },
     },
   },

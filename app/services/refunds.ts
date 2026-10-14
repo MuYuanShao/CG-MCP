@@ -1,4 +1,6 @@
 import { requestJson } from '../lib/api';
+import type { PageResult } from './purchase';
+import { toPageResult } from './pagination';
 
 export type RefundStatus = 'pending_audit' | 'approved' | 'returning' | 'completed' | 'rejected' | 'closed';
 
@@ -28,9 +30,10 @@ export type RefundSyncPayload = RefundPayload & {
 
 export const refundQueryKey = ['refunds'] as const;
 
-export async function listRefunds() {
-  const result = await requestJson<RefundItem[]>('/refunds');
-  return result.data;
+export async function listRefunds(current = 1, size = 20) {
+  const search = new URLSearchParams({ current: String(current), size: String(size) });
+  const result = await requestJson<PageResult<RefundItem> | RefundItem[]>(`/refunds?${search.toString()}`);
+  return toPageResult(result.data);
 }
 
 export async function createRefund(payload: RefundPayload) {

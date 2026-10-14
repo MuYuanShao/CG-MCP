@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import {
   Search,
   Download,
@@ -10,6 +11,7 @@ import {
   X,
 } from 'lucide-react';
 import { useFeedback } from './AppFeedback';
+import { listSettlements, getSettlementItems, type SettlementItemDetail } from '../services/settlement';
 
 interface SettlementItem {
   id: number;
@@ -18,15 +20,7 @@ interface SettlementItem {
   settlementStart: string;
   settlementEnd: string;
   amount: number;
-  status:
-    | 'pending_confirm'
-    | 'supplier_confirmed'
-    | 'hospital_confirmed'
-    | 'pending_audit'
-    | 'completed'
-    | 'difference'
-    | 'pending_invoice'
-    | 'closed';
+  status: number;
 }
 
 interface SettlementDetailItem {
@@ -35,6 +29,8 @@ interface SettlementDetailItem {
   productCode: string;
   productName: string;
   spec: string;
+  batchNo: string;
+  registrationNo: string;
   qty: number;
   price: number;
   amount: number;
@@ -59,7 +55,7 @@ const mockSettlements: SettlementItem[] = [
     settlementStart: '2024-03-01',
     settlementEnd: '2024-03-31',
     amount: 285000,
-    status: 'pending_confirm',
+    status: 0,
   },
   {
     id: 2,
@@ -68,7 +64,7 @@ const mockSettlements: SettlementItem[] = [
     settlementStart: '2024-02-01',
     settlementEnd: '2024-02-29',
     amount: 452000,
-    status: 'supplier_confirmed',
+    status: 1,
   },
   {
     id: 3,
@@ -77,7 +73,7 @@ const mockSettlements: SettlementItem[] = [
     settlementStart: '2024-01-01',
     settlementEnd: '2024-01-31',
     amount: 368000,
-    status: 'hospital_confirmed',
+    status: 2,
   },
   {
     id: 4,
@@ -86,7 +82,7 @@ const mockSettlements: SettlementItem[] = [
     settlementStart: '2024-01-01',
     settlementEnd: '2024-01-31',
     amount: 195000,
-    status: 'pending_audit',
+    status: 3,
   },
   {
     id: 5,
@@ -95,7 +91,7 @@ const mockSettlements: SettlementItem[] = [
     settlementStart: '2023-12-01',
     settlementEnd: '2023-12-31',
     amount: 520000,
-    status: 'completed',
+    status: 5,
   },
 ];
 
@@ -106,6 +102,8 @@ const mockDetailItems: SettlementDetailItem[] = [
     productCode: 'YLQX20240001',
     productName: '一次性无菌注射器',
     spec: '5ml',
+    batchNo: 'B20240301',
+    registrationNo: 'ZC20230001',
     qty: 10000,
     price: 2.5,
     amount: 25000,
@@ -116,6 +114,8 @@ const mockDetailItems: SettlementDetailItem[] = [
     productCode: 'YLQX20240002',
     productName: '医用外科口罩',
     spec: '一次性',
+    batchNo: 'B20240302',
+    registrationNo: 'ZC20230005',
     qty: 50000,
     price: 1.2,
     amount: 60000,
@@ -126,6 +126,8 @@ const mockDetailItems: SettlementDetailItem[] = [
     productCode: 'YLQX20240003',
     productName: '输液器',
     spec: '精密过滤',
+    batchNo: 'B20240303',
+    registrationNo: 'ZC20230010',
     qty: 20000,
     price: 10.0,
     amount: 200000,
@@ -182,58 +184,56 @@ export default function SettlementManagement() {
   const [showDetailDialog, setShowDetailDialog] = useState(false);
   const [showInvoiceBindDialog, setShowInvoiceBindDialog] = useState(false);
   const [selectedInvoices, setSelectedInvoices] = useState<number[]>([]);
+  const [selectedSettlementId, setSelectedSettlementId] = useState<number | null>(null);
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'pending_confirm':
-        return 'text-muted-foreground bg-muted';
-      case 'supplier_confirmed':
-        return 'text-[#3b82f6] bg-[#3b82f6]/10';
-      case 'hospital_confirmed':
-        return 'text-[#8b5cf6] bg-[#8b5cf6]/10';
-      case 'pending_audit':
-        return 'text-[#f59e0b] bg-[#f59e0b]/10';
-      case 'completed':
-        return 'text-[#10b981] bg-[#10b981]/10';
-      case 'difference':
-        return 'text-[#f97316] bg-[#f97316]/10';
-      case 'pending_invoice':
-        return 'text-[#06b6d4] bg-[#06b6d4]/10';
-      case 'closed':
-        return 'text-muted-foreground bg-muted';
-      default:
-        return 'text-foreground bg-muted';
-    }
+  const { data: settlements = mockSettlements } = useQuery({
+    queryKey: ['settlements'],
+    queryFn: async () => {
+      try {
+        return await listSettlements();
+      } catch {
+        return mockSettlements;
+      }
+    },
+  });
+
+  const { data: detailItems = mockDetailItems } = useQuery({
+    queryKey: ['settlement-items', selectedSettlementId],
+    queryFn: async () => {
+      if (!selectedSettlementId) return mockDetailItems;
+      try {
+        return await getSettlementItems(selectedSettlementId);
+      } catch {
+        return mockDetailItems;
+      }
+    },
+    enabled: showDetailDialog && selectedSettlementId !== null,
+  });
+
+  const statusMap: Record<number, { text: string; color: string }> = {
+    0: { text: '待确认', color: 'text-muted-foreground bg-muted' },
+    1: { text: '供应商已确认', color: 'text-[#3b82f6] bg-[#3b82f6]/10' },
+    2: { text: '医院已确认', color: 'text-[#8b5cf6] bg-[#8b5cf6]/10' },
+    3: { text: '待审批', color: 'text-[#f59e0b] bg-[#f59e0b]/10' },
+    4: { text: '差异处理中', color: 'text-[#f97316] bg-[#f97316]/10' },
+    5: { text: '已完成', color: 'text-[#10b981] bg-[#10b981]/10' },
+    6: { text: '待开票', color: 'text-[#06b6d4] bg-[#06b6d4]/10' },
+    7: { text: '已关闭', color: 'text-muted-foreground bg-muted' },
   };
 
-  const getStatusText = (status: string) => {
-    switch (status) {
-      case 'pending_confirm':
-        return '待确认';
-      case 'supplier_confirmed':
-        return '供应商已确认';
-      case 'hospital_confirmed':
-        return '医院已确认';
-      case 'pending_audit':
-        return '待审批';
-      case 'completed':
-        return '已完成';
-      case 'difference':
-        return '差异处理中';
-      case 'pending_invoice':
-        return '待开票';
-      case 'closed':
-        return '已关闭';
-      default:
-        return status;
-    }
+  const getStatusColor = (status: number) => {
+    return statusMap[status]?.color ?? 'text-foreground bg-muted';
+  };
+
+  const getStatusText = (status: number) => {
+    return statusMap[status]?.text ?? '未知';
   };
 
   const handleSelectAll = () => {
-    if (selectedRows.length === mockSettlements.length) {
+    if (selectedRows.length === settlements.length) {
       setSelectedRows([]);
     } else {
-      setSelectedRows(mockSettlements.map((item) => item.id));
+      setSelectedRows(settlements.map((item) => item.id));
     }
   };
 
@@ -250,6 +250,9 @@ export default function SettlementManagement() {
       notify.warning('请选择一条记录查看明细');
       return;
     }
+    const id = selectedRows[0];
+    if (id === undefined) return;
+    setSelectedSettlementId(id);
     setShowDetailDialog(true);
   };
 
@@ -293,7 +296,7 @@ export default function SettlementManagement() {
 
   // 获取排序后的明细数据
   const getSortedDetailItems = () => {
-    return [...mockDetailItems].sort((a, b) => a.spec.localeCompare(b.spec));
+    return [...(detailItems ?? mockDetailItems)].sort((a, b) => a.spec.localeCompare(b.spec));
   };
 
   const getInvoiceStatusColor = (status: string) => {
@@ -443,7 +446,7 @@ export default function SettlementManagement() {
                 <th className="px-4 py-3 text-left">
                   <input
                     type="checkbox"
-                    checked={selectedRows.length === mockSettlements.length}
+                    checked={selectedRows.length === settlements.length}
                     onChange={handleSelectAll}
                     className="size-4 rounded border-border"
                   />
@@ -472,7 +475,7 @@ export default function SettlementManagement() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {mockSettlements.map((item) => (
+              {settlements.map((item) => (
                 <tr key={item.id} className="hover:bg-accent/50 transition-colors">
                   <td className="px-4 py-3">
                     <input
@@ -507,7 +510,7 @@ export default function SettlementManagement() {
           </table>
         </div>
         <div className="px-6 py-4 border-t border-border flex items-center justify-between">
-          <div className="text-sm text-muted-foreground">每页25条 · 共{mockSettlements.length}条</div>
+          <div className="text-sm text-muted-foreground">每页25条 · 共{settlements.length}条</div>
           <div className="flex items-center gap-2">
             <button className="px-3 py-1 border border-border rounded hover:bg-accent transition-colors text-sm">
               首页
@@ -785,6 +788,12 @@ export default function SettlementManagement() {
                         <th className="px-3 py-2 text-left text-sm font-medium text-muted-foreground">
                           规格
                         </th>
+                        <th className="px-3 py-2 text-left text-sm font-medium text-muted-foreground">
+                          批号
+                        </th>
+                        <th className="px-3 py-2 text-left text-sm font-medium text-muted-foreground">
+                          注册证
+                        </th>
                         <th className="px-3 py-2 text-right text-sm font-medium text-muted-foreground">
                           数量
                         </th>
@@ -802,6 +811,8 @@ export default function SettlementManagement() {
                           <td className="px-3 py-2 text-sm font-mono">{item.productCode}</td>
                           <td className="px-3 py-2 text-sm">{item.productName}</td>
                           <td className="px-3 py-2 text-sm">{item.spec}</td>
+                          <td className="px-3 py-2 text-sm font-mono">{item.batchNo}</td>
+                          <td className="px-3 py-2 text-sm font-mono">{item.registrationNo}</td>
                           <td className="px-3 py-2 text-right text-sm">{item.qty.toLocaleString()}</td>
                           <td className="px-3 py-2 text-right text-sm">{item.price.toFixed(2)}</td>
                           <td className="px-3 py-2 text-right text-sm font-medium">
@@ -812,7 +823,7 @@ export default function SettlementManagement() {
                     </tbody>
                     <tfoot>
                       <tr className="border-t-2 border-border bg-muted/30">
-                        <td colSpan={5} className="px-3 py-3 text-right font-medium">
+                        <td colSpan={7} className="px-3 py-3 text-right font-medium">
                           合计
                         </td>
                         <td className="px-3 py-3 text-right font-medium text-primary">

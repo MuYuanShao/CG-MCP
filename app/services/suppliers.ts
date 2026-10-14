@@ -1,4 +1,6 @@
 import { requestJson } from '../lib/api';
+import type { PageResult } from './purchase';
+import { toPageResult } from './pagination';
 
 export type SupplierStatus = 'active' | 'inactive';
 
@@ -21,9 +23,10 @@ export type SupplierPayload = Pick<
 
 export const supplierQueryKey = ['suppliers'] as const;
 
-export async function listSuppliers() {
-  const result = await requestJson<SupplierItem[]>('/suppliers');
-  return result.data;
+export async function listSuppliers(current = 1, size = 20) {
+  const search = new URLSearchParams({ current: String(current), size: String(size) });
+  const result = await requestJson<PageResult<SupplierItem> | SupplierItem[]>(`/suppliers?${search.toString()}`);
+  return toPageResult(result.data);
 }
 
 export async function createSupplier(payload: SupplierPayload) {

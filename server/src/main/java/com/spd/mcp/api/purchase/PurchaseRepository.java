@@ -54,6 +54,53 @@ public class PurchaseRepository {
         """, this::mapDocument, tenantId);
   }
 
+  public Optional<Integer> findPlanStatus(long tenantId, long planId) {
+    return jdbcTemplate.queryForList(
+        "SELECT status FROM biz_purchase_plan WHERE tenant_id = ? AND id = ? AND deleted = 0",
+        Integer.class,
+        tenantId,
+        planId).stream().findFirst();
+  }
+
+  public Optional<Integer> findPlanStatusByNo(long tenantId, String planNo) {
+    return jdbcTemplate.queryForList(
+        "SELECT status FROM biz_purchase_plan WHERE tenant_id = ? AND plan_no = ? AND deleted = 0",
+        Integer.class,
+        tenantId,
+        planNo).stream().findFirst();
+  }
+
+  public void updatePlanApprovalStatus(long tenantId, long planId, int targetStatus) {
+    int affectedRows = jdbcTemplate.update("""
+        UPDATE biz_purchase_plan
+        SET status = ?, updated_time = CURRENT_TIMESTAMP
+        WHERE tenant_id = ? AND id = ? AND deleted = 0 AND status = 1
+        """, targetStatus, tenantId, planId);
+    if (affectedRows == 0) {
+      if (findPlanStatus(tenantId, planId).isEmpty()) {
+        throw new BusinessException("PLAN_NOT_FOUND", "采购计划不存在", HttpStatus.NOT_FOUND);
+      }
+      throw new BusinessException("PLAN_STATUS_CHANGED", "采购计划已不在待审批状态，请刷新后重试");
+    }
+  }
+
+  public void updatePlan(long tenantId, long planId, PurchasePlanUpdateRequest request,int expectedStatus) {
+    int affectedRows = jdbcTemplate.update("""
+        UPDATE biz_purchase_plan
+        SET plan_qty = ?, unit_price = ?, expected_delivery_date = ?, status=CASE WHEN status=2 THEN 0 ELSE status END, updated_time = CURRENT_TIMESTAMP
+        WHERE tenant_id = ? AND id = ? AND deleted = 0 AND status=? AND status IN (0,1,2,3)
+        """, request.quantity(), request.unitPrice(), request.expectedDeliveryDate(), tenantId, planId,expectedStatus);
+    if (affectedRows == 0) {
+      if(findPlanStatus(tenantId,planId).isEmpty()) throw new BusinessException("PLAN_NOT_FOUND", "采购计划不存在", HttpStatus.NOT_FOUND);
+      throw new BusinessException("PLAN_STATUS_CHANGED","采购计划状态已变化，请刷新后重试");
+    }
+  }
+
+  public void submitPlan(long tenantId,long planId) {
+    int changed=jdbcTemplate.update("UPDATE biz_purchase_plan SET status=1,updated_time=CURRENT_TIMESTAMP WHERE tenant_id=? AND id=? AND deleted=0 AND status=0",tenantId,planId);
+    if(changed!=1) throw new BusinessException("PLAN_SUBMIT_STATUS_INVALID","仅草稿采购计划可提交，请先修改驳回计划并刷新");
+  }
+
   public List<BusinessDocumentDto> orders(long tenantId, PurchaseOrderSearchRequest request) {
     StringBuilder sql = new StringBuilder("""
         SELECT

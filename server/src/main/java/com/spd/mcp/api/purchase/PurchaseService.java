@@ -1,8 +1,11 @@
 package com.spd.mcp.api.purchase;
 
+import com.spd.mcp.api.approval.ApprovalAccessService;
+import com.spd.mcp.api.common.BusinessException;
 import com.spd.mcp.api.tenant.TenantContext;
 import com.spd.mcp.api.common.PageResult;
 import java.util.List;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -10,14 +13,58 @@ import org.springframework.transaction.annotation.Transactional;
 public class PurchaseService {
   private final PurchaseRepository purchaseRepository;
   private final TenantContext tenantContext;
+  private final ApprovalAccessService approvalAccessService;
 
-  public PurchaseService(PurchaseRepository purchaseRepository, TenantContext tenantContext) {
+  public PurchaseService(
+      PurchaseRepository purchaseRepository,
+      TenantContext tenantContext,
+      ApprovalAccessService approvalAccessService
+  ) {
     this.purchaseRepository = purchaseRepository;
     this.tenantContext = tenantContext;
+    this.approvalAccessService = approvalAccessService;
   }
 
   public List<BusinessDocumentDto> plans() {
-    return purchaseRepository.plans(tenantContext.currentTenantId());
+    boolean canOperate = approvalAccessService.canOperate(ApprovalAccessService.PURCHASE_PLAN_WORKFLOW);
+    return purchaseRepository.plans(tenantContext.currentTenantId()).stream()
+        .map(plan -> plan.withCapabilities(
+            canOperate && "pending_approval".equals(plan.status()),
+            switch (plan.status()) {
+              case "pending_approval" -> canOperate;
+              case "draft", "rejected", "pending_order" -> true;
+              default -> false;
+            }))
+        .toList();
+  }
+
+  @Transactional
+  public void updatePlan(long planId, PurchasePlanUpdateRequest request) {
+    long tenantId = tenantContext.currentTenantId();
+    int status = purchaseRepository.findPlanStatus(tenantId, planId)
+        .orElseThrow(() -> new BusinessException("PLAN_NOT_FOUND", "采购计划不存在", HttpStatus.NOT_FOUND));
+    if (status == 1) {
+      approvalAccessService.requireOperation(ApprovalAccessService.PURCHASE_PLAN_WORKFLOW);
+    }
+    if (status < 0 || status > 3) {
+      throw new BusinessException("PLAN_EDIT_STATUS_INVALID", "当前采购计划状态不允许修改");
+    }
+    purchaseRepository.updatePlan(tenantId, planId, request,status);
+  }
+
+  @Transactional
+  public void submitPlan(long planId) {purchaseRepository.submitPlan(tenantContext.currentTenantId(),planId);}
+
+  @Transactional
+  public void approvePlan(long planId) {
+    approvalAccessService.requireOperation(ApprovalAccessService.PURCHASE_PLAN_WORKFLOW);
+    purchaseRepository.updatePlanApprovalStatus(tenantContext.currentTenantId(), planId, 3);
+  }
+
+  @Transactional
+  public void rejectPlan(long planId) {
+    approvalAccessService.requireOperation(ApprovalAccessService.PURCHASE_PLAN_WORKFLOW);
+    purchaseRepository.updatePlanApprovalStatus(tenantContext.currentTenantId(), planId, 2);
   }
 
   public List<BusinessDocumentDto> orders(PurchaseOrderSearchRequest request) {
@@ -47,6 +94,16 @@ public class PurchaseService {
 
   @Transactional
   public DeliveryEditDto getOrCreateDeliveryEditByPlanNo(String planNo) {
+    long tenantId = tenantContext.currentTenantId();
+    int status = purchaseRepository.findPlanStatusByNo(tenantId, planNo)
+        .orElseThrow(() -> new BusinessException("PLAN_NOT_FOUND", "采购计划不存在", HttpStatus.NOT_FOUND));
+    if (status == 1) {
+      approvalAccessService.requireOperation(ApprovalAccessService.PURCHASE_PLAN_WORKFLOW);
+      throw new BusinessException("PLAN_APPROVAL_REQUIRED", "采购计划审批通过后才能转订单");
+    }
+    if (status != 3 && status != 4) {
+      throw new BusinessException("PLAN_STATUS_INVALID", "当前采购计划状态不允许转订单");
+    }
     return purchaseRepository.getOrCreateDeliveryEditByPlanNo(tenantContext.currentTenantId(), planNo);
   }
 

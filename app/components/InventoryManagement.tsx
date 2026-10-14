@@ -179,9 +179,9 @@ export default function InventoryManagement() {
 
   const inventoryLedgerQuery = useQuery({
     queryKey: ['inventory-ledger'],
-    queryFn: listInventoryLedger,
+    queryFn: () => listInventoryLedger(),
   });
-  const stockRows: InventoryLedgerItem[] = inventoryLedgerQuery.data ?? [];
+  const stockRows: InventoryLedgerItem[] = inventoryLedgerQuery.data?.records ?? [];
   const selectedStock = stockRows.find((item) => item.id === selectedRows[0]);
   const stockDetailQuery = useQuery({
     queryKey: ['inventory-batch-details', selectedProductId, detailPage, detailSize],

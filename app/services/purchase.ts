@@ -41,6 +41,8 @@ export type BusinessDocument = {
   amount: number | null;
   businessDate: string | null;
   status: string;
+  canApprove?: boolean;
+  canEdit?: boolean;
 };
 
 export type PurchaseOrderSearchParams = {
@@ -59,6 +61,28 @@ export type PageResult<T> = {
   size: number;
 };
 
+export type ApprovalScopeOption = { id: number; code: string; name: string };
+export type ApprovalScopeConfig = {
+  workflowCode: string;
+  roles: ApprovalScopeOption[];
+  users: ApprovalScopeOption[];
+  selectedRoleIds: number[];
+  selectedUserIds: number[];
+};
+
+export async function getPurchasePlanApprovalScope() {
+  const result = await requestJson<ApprovalScopeConfig>('/approval-scopes/purchase-plan');
+  return result.data;
+}
+
+export async function updatePurchasePlanApprovalScope(roleIds: number[], userIds: number[]) {
+  const result = await requestJson<ApprovalScopeConfig>('/approval-scopes/purchase-plan', {
+    method: 'PUT',
+    body: JSON.stringify({ roleIds, userIds }),
+  });
+  return result.data;
+}
+
 export type PurchaseOrderDetailSearchParams = {
   productCode?: string;
   productName?: string;
@@ -68,8 +92,36 @@ export type PurchaseOrderDetailSearchParams = {
   size?: number;
 };
 
-export async function listPurchasePlans() {
-  const result = await requestJson<BusinessDocument[]>('/purchase-plans');
+export async function listPurchasePlans(current = 1, size = 20) {
+  const search = new URLSearchParams({ current: String(current), size: String(size) });
+  const result = await requestJson<PageResult<BusinessDocument> | BusinessDocument[]>(`/purchase-plans?${search.toString()}`);
+  return Array.isArray(result.data)
+    ? { records: result.data, total: result.data.length, current, size }
+    : result.data;
+}
+
+export async function approvePurchasePlan(planId: number) {
+  const result = await requestJson<{ approved: boolean }>(`/purchase-plans/${planId}/approve`, { method: 'POST' });
+  return result.data;
+}
+
+export async function rejectPurchasePlan(planId: number) {
+  const result = await requestJson<{ rejected: boolean }>(`/purchase-plans/${planId}/reject`, { method: 'POST' });
+  return result.data;
+}
+
+export async function submitPurchasePlan(planId: number) {
+  return (await requestJson<{ submitted: boolean }>(`/purchase-plans/${planId}/submit`, { method: 'POST' })).data;
+}
+
+export async function updatePurchasePlan(
+  planId: number,
+  payload: { quantity: number; unitPrice: number; expectedDeliveryDate: string },
+) {
+  const result = await requestJson<{ updated: boolean }>(`/purchase-plans/${planId}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
   return result.data;
 }
 
@@ -96,14 +148,16 @@ export async function createDeliveryEditByPlan(planNo: string) {
   return result.data;
 }
 
-export async function listPurchaseOrders(params: PurchaseOrderSearchParams = {}) {
+export async function listPurchaseOrders(params: PurchaseOrderSearchParams = {}, current = 1, size = 20) {
   const search = new URLSearchParams();
+  search.set('current', String(current));
+  search.set('size', String(size));
   Object.entries(params).forEach(([key, value]) => {
     if (value) search.set(key, value);
   });
   const query = search.toString();
-  const result = await requestJson<BusinessDocument[]>(`/purchase-orders${query ? `?${query}` : ''}`);
-  return result.data;
+  const result = await requestJson<PageResult<BusinessDocument> | BusinessDocument[]>(`/purchase-orders?${query}`);
+  return Array.isArray(result.data) ? { records: result.data, total: result.data.length, current: 1, size: result.data.length } : result.data;
 }
 
 export async function getPurchaseOrderDetails(orderId: number, params: PurchaseOrderDetailSearchParams = {}) {
@@ -118,14 +172,16 @@ export async function getPurchaseOrderDetails(orderId: number, params: PurchaseO
   return result.data;
 }
 
-export async function listDeliveryOrders() {
-  const result = await requestJson<BusinessDocument[]>('/delivery-orders');
-  return result.data;
+export async function listDeliveryOrders(current = 1, size = 20) {
+  const search = new URLSearchParams({ current: String(current), size: String(size) });
+  const result = await requestJson<PageResult<BusinessDocument> | BusinessDocument[]>(`/delivery-orders?${search.toString()}`);
+  return Array.isArray(result.data) ? { records: result.data, total: result.data.length, current: 1, size: result.data.length } : result.data;
 }
 
-export async function listShipmentOrders() {
-  const result = await requestJson<BusinessDocument[]>('/shipment-orders');
-  return result.data;
+export async function listShipmentOrders(current = 1, size = 20) {
+  const search = new URLSearchParams({ current: String(current), size: String(size) });
+  const result = await requestJson<PageResult<BusinessDocument> | BusinessDocument[]>(`/shipment-orders?${search.toString()}`);
+  return Array.isArray(result.data) ? { records: result.data, total: result.data.length, current: 1, size: result.data.length } : result.data;
 }
 
 export async function confirmPurchaseOrder(orderId: number) {

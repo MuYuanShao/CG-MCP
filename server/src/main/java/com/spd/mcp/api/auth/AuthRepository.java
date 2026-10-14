@@ -22,7 +22,10 @@ public class AuthRepository {
         JOIN sys_user_role ur ON ur.user_id = u.id
         JOIN sys_role r ON r.tenant_id = u.tenant_id AND r.id = ur.role_id AND r.deleted = 0
         WHERE u.tenant_id = ? AND u.username = ? AND u.deleted = 0 AND u.status = 1
-        ORDER BY r.id ASC
+        ORDER BY CASE
+          WHEN UPPER(r.role_code) IN ('ADMIN', 'ROLE_ADMIN', 'SPD_ADMIN', 'SYSTEM_ADMIN') THEN 0
+          ELSE 1
+        END, r.id ASC
         LIMIT 1
         """,
         (rs, rowNum) -> new UserAccount(
@@ -43,7 +46,10 @@ public class AuthRepository {
         JOIN sys_user_role ur ON ur.user_id = u.id
         JOIN sys_role r ON r.tenant_id = u.tenant_id AND r.id = ur.role_id AND r.deleted = 0
         WHERE u.tenant_id = ? AND u.id = ? AND u.deleted = 0 AND u.status = 1
-        ORDER BY r.id ASC
+        ORDER BY CASE
+          WHEN UPPER(r.role_code) IN ('ADMIN', 'ROLE_ADMIN', 'SPD_ADMIN', 'SYSTEM_ADMIN') THEN 0
+          ELSE 1
+        END, r.id ASC
         LIMIT 1
         """,
         (rs, rowNum) -> new UserAccount(

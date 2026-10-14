@@ -13,5 +13,6 @@ public record LicenseRequest(
     @NotNull(message = "证照开始日期不能为空") LocalDate issueDate,
     @NotNull(message = "证照结束日期不能为空") LocalDate expiryDate,
     String fileUrl,
-    String remark
+    String remark,
+    Long productId
 ) {}

@@ -32,6 +32,33 @@ public class PurchaseController {
     return ApiResponse.success(purchaseService.plans());
   }
 
+  @PostMapping("/purchase-plans/{planId}/approve")
+  public ApiResponse<Map<String, Object>> approvePlan(@PathVariable long planId) {
+    purchaseService.approvePlan(planId);
+    return ApiResponse.success(Map.of("approved", true));
+  }
+
+  @PostMapping("/purchase-plans/{planId}/reject")
+  public ApiResponse<Map<String, Object>> rejectPlan(@PathVariable long planId) {
+    purchaseService.rejectPlan(planId);
+    return ApiResponse.success(Map.of("rejected", true));
+  }
+
+  @PutMapping("/purchase-plans/{planId}")
+  public ApiResponse<Map<String, Object>> updatePlan(
+      @PathVariable long planId,
+      @Valid @RequestBody PurchasePlanUpdateRequest request
+  ) {
+    purchaseService.updatePlan(planId, request);
+    return ApiResponse.success(Map.of("updated", true));
+  }
+
+  @PostMapping("/purchase-plans/{planId}/submit")
+  @RequirePermission("purchasePlans:submit")
+  public ApiResponse<Map<String,Object>> submitPlan(@PathVariable long planId) {
+    purchaseService.submitPlan(planId);return ApiResponse.success(Map.of("submitted",true));
+  }
+
   @GetMapping("/purchase-orders")
   public ApiResponse<List<BusinessDocumentDto>> orders(
       @RequestParam(required = false) String orderNo,

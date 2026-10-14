@@ -101,7 +101,7 @@ public class LicenseRepository {
           l.license_code,
           COALESCE(l.license_name, CONCAT(COALESCE(pr.product_name, COALESCE(h.hospital_name, '')), l.license_type)) AS license_name,
           l.license_type,
-          COALESCE(l.related_product, pr.product_name, '-') AS related_product,
+          COALESCE(pr.product_name, l.related_product, '-') AS related_product,
           COALESCE(l.hospital_name, h.hospital_name, '') AS hospital_name,
           l.issue_date,
           l.expiry_date,
@@ -131,7 +131,7 @@ public class LicenseRepository {
           l.license_code,
           COALESCE(l.license_name, CONCAT(COALESCE(pr.product_name, COALESCE(h.hospital_name, '')), l.license_type)) AS license_name,
           l.license_type,
-          COALESCE(l.related_product, pr.product_name, '-') AS related_product,
+          COALESCE(pr.product_name, l.related_product, '-') AS related_product,
           COALESCE(l.hospital_name, h.hospital_name, '') AS hospital_name,
           l.issue_date,
           l.expiry_date,
@@ -150,8 +150,8 @@ public class LicenseRepository {
     jdbcTemplate.update("""
         INSERT INTO biz_license (
           id, tenant_id, license_code, license_type, license_name, hospital_name,
-          related_product, issue_date, expiry_date, file_url, status, remark
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+          related_product, issue_date, expiry_date, file_url, status, remark,product_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?,?)
         """,
         id,
         tenantId,
@@ -163,7 +163,7 @@ public class LicenseRepository {
         request.issueDate(),
         request.expiryDate(),
         blankToNull(request.fileUrl()),
-        blankToNull(request.remark()));
+        blankToNull(request.remark()),resolveProduct(tenantId,id,request));
   }
 
   public int update(long tenantId, long id, LicenseRequest request) {
@@ -171,7 +171,7 @@ public class LicenseRepository {
         UPDATE biz_license
         SET license_code = ?, license_type = ?, license_name = ?, hospital_name = ?,
           related_product = ?, issue_date = ?, expiry_date = ?, file_url = ?,
-          remark = ?, updated_time = CURRENT_TIMESTAMP
+          remark = ?,product_id=?, updated_time = CURRENT_TIMESTAMP
         WHERE tenant_id = ? AND id = ? AND deleted = 0
         """,
         valueOrGeneratedCode(request.licenseCode(), id),
@@ -183,6 +183,7 @@ public class LicenseRepository {
         request.expiryDate(),
         blankToNull(request.fileUrl()),
         blankToNull(request.remark()),
+        resolveProduct(tenantId,id,request),
         tenantId,
         id);
   }
@@ -193,6 +194,21 @@ public class LicenseRepository {
         SET deleted = 1, updated_time = CURRENT_TIMESTAMP
         WHERE tenant_id = ? AND id = ? AND deleted = 0
         """, tenantId, id);
+  }
+
+  private Long resolveProduct(long tenant,long license,LicenseRequest request) {
+    if(request.productId()!=null) {
+      var found=jdbcTemplate.queryForList("SELECT id FROM biz_product WHERE tenant_id=? AND id=? AND deleted=0",Long.class,tenant,request.productId());
+      if(found.isEmpty()) throw new com.spd.mcp.api.common.BusinessException("LICENSE_PRODUCT_INVALID","关联商品不存在");
+      return request.productId();
+    }
+    if(request.relatedProduct()==null || request.relatedProduct().isBlank() || request.relatedProduct().equals("-")) return null;
+    var found=jdbcTemplate.queryForList("SELECT id FROM biz_product WHERE tenant_id=? AND product_name=? AND deleted=0",Long.class,tenant,request.relatedProduct());
+    if(found.size()>1) throw new com.spd.mcp.api.common.BusinessException("LICENSE_PRODUCT_AMBIGUOUS","关联商品名称不唯一，请使用商品ID关联");
+    if(!found.isEmpty()) return found.get(0);
+    var previous=jdbcTemplate.queryForList("SELECT product_id,related_product FROM biz_license WHERE tenant_id=? AND id=?",tenant,license);
+    if(!previous.isEmpty() && request.relatedProduct().equals(previous.get(0).get("related_product")) && previous.get(0).get("product_id") instanceof Number id) return id.longValue();
+    return null;
   }
 
   private LicenseDto mapLicense(ResultSet rs, int rowNum) throws SQLException {

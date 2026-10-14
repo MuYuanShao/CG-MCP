@@ -32,9 +32,18 @@ declare global {
   interface Window {
     __APP_CONFIG__?: {
       VITE_API_BASE_URL?: string;
-      VITE_API_KEY?: string;
     };
   }
+}
+
+let _authToken = '';
+
+export function setAuthToken(token: string) {
+  _authToken = token;
+}
+
+export function clearAuthToken() {
+  _authToken = '';
 }
 
 function getApiBaseUrl() {
@@ -50,15 +59,8 @@ function buildApiUrl(path: string) {
   return `${getApiBaseUrl()}${normalizedPath}`;
 }
 
-function getApiKey() {
-  const runtimeApiKey = typeof window !== 'undefined'
-    ? window.__APP_CONFIG__?.VITE_API_KEY
-    : undefined;
-  return runtimeApiKey ?? import.meta.env.VITE_API_KEY ?? '';
-}
-
 function getAuthToken() {
-  return typeof window === 'undefined' ? '' : window.localStorage.getItem('spd_auth_token') ?? '';
+  return _authToken;
 }
 
 export async function requestJson<T>(
@@ -70,7 +72,6 @@ export async function requestJson<T>(
     ...init,
     headers: {
       'Content-Type': 'application/json',
-      ...(getApiKey() ? { 'x-api-key': getApiKey() } : {}),
       ...(getAuthToken() ? { Authorization: `Bearer ${getAuthToken()}` } : {}),
       ...init.headers,
     },
@@ -112,7 +113,6 @@ export async function requestFormData<T>(
     credentials: 'include',
     ...init,
     headers: {
-      ...(getApiKey() ? { 'x-api-key': getApiKey() } : {}),
       ...(getAuthToken() ? { Authorization: `Bearer ${getAuthToken()}` } : {}),
       ...init.headers,
     },

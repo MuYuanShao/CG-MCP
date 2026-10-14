@@ -1,4 +1,6 @@
 import { requestJson } from '../lib/api';
+import type { PageResult } from './purchase';
+import { toPageResult } from './pagination';
 
 export type HospitalStatus = 'active' | 'inactive';
 
@@ -21,9 +23,10 @@ export type HospitalPayload = Pick<
 
 export const hospitalQueryKey = ['hospitals'] as const;
 
-export async function listHospitals() {
-  const result = await requestJson<HospitalItem[]>('/hospitals');
-  return result.data;
+export async function listHospitals(current = 1, size = 20) {
+  const search = new URLSearchParams({ current: String(current), size: String(size) });
+  const result = await requestJson<PageResult<HospitalItem> | HospitalItem[]>(`/hospitals?${search.toString()}`);
+  return toPageResult(result.data);
 }
 
 export async function createHospital(payload: HospitalPayload) {

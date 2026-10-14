@@ -1,5 +1,6 @@
 import { requestJson } from '../lib/api';
 import type { PageResult } from './purchase';
+import { toPageResult } from './pagination';
 
 export type InventoryLedgerItem = {
   id: number;
@@ -26,9 +27,10 @@ export type InventoryBatchDetail = {
   quantity: number;
 };
 
-export async function listInventoryLedger() {
-  const result = await requestJson<InventoryLedgerItem[]>('/inventory-ledger');
-  return result.data;
+export async function listInventoryLedger(current = 1, size = 20) {
+  const search = new URLSearchParams({ current: String(current), size: String(size) });
+  const result = await requestJson<PageResult<InventoryLedgerItem> | InventoryLedgerItem[]>(`/inventory-ledger?${search.toString()}`);
+  return toPageResult(result.data);
 }
 
 export async function listInventoryBatchDetails(productId: number, current = 1, size = 10) {

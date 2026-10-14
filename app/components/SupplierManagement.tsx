@@ -50,9 +50,9 @@ export default function SupplierManagement() {
 
   const suppliersQuery = useQuery({
     queryKey: supplierQueryKey,
-    queryFn: listSuppliers,
+    queryFn: () => listSuppliers(),
   });
-  const suppliers = suppliersQuery.data ?? [];
+  const suppliers = suppliersQuery.data?.records ?? [];
 
   const createSupplierMutation = useMutation({
     mutationFn: createSupplier,
@@ -68,9 +68,9 @@ export default function SupplierManagement() {
   });
   const hospitalsQuery = useQuery({
     queryKey: hospitalQueryKey,
-    queryFn: listHospitals,
+    queryFn: () => listHospitals(),
   });
-  const hospitals = hospitalsQuery.data ?? [];
+  const hospitals = hospitalsQuery.data?.records ?? [];
   const supplierHospitalRelationsQuery = useQuery({
     queryKey: ['supplier-hospital-relations'],
     queryFn: listHospitalIdsBySuppliers,
@@ -151,7 +151,7 @@ export default function SupplierManagement() {
     }
     if (!validateSupplierForm()) return;
     updateSupplierMutation.mutate(
-      { id: selectedSuppliers[0], payload: toSupplierPayload() },
+      { id: selectedSuppliers[0]!, payload: toSupplierPayload() },
       {
         onSuccess: () => {
           notify.success('供应商信息已更新');

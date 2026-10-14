@@ -43,7 +43,8 @@ services:
       APP_DEFAULT_OPERATOR_NAME: ${APP_DEFAULT_OPERATOR_NAME:-frontend-user}
       APP_ADMIN_USERNAME: ${APP_ADMIN_USERNAME:-root}
       APP_ADMIN_PASSWORD: ${APP_ADMIN_PASSWORD:?APP_ADMIN_PASSWORD is required}
-      APP_AUTH_TOKEN_SECRET: ${APP_AUTH_TOKEN_SECRET:-${APP_API_KEY:?APP_API_KEY is required}}
+      APP_AUTH_TOKEN_SECRET: ${APP_AUTH_TOKEN_SECRET:?APP_AUTH_TOKEN_SECRET is required}
+      SPD_PR_MAIN_TOKEN: ${SPD_PR_MAIN_TOKEN:-}
     depends_on:
       mysql:
         condition: service_healthy
@@ -62,7 +63,7 @@ services:
     restart: unless-stopped
     environment:
       VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
-      VITE_API_KEY: ${VITE_API_KEY:?VITE_API_KEY is required}
+      NGINX_API_KEY: ${APP_API_KEY:?APP_API_KEY is required}
     ports:
       - "8088:80"
     depends_on:

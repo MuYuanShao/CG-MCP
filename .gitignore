@@ -3,6 +3,10 @@ dist/
 server/target/
 test-results/
 playwright-report/
+.playwright-cli/
+.claude/
+__pycache__/
+*.pyc
 logs/
 uploads/
 .idea/
@@ -13,3 +17,4 @@ uploads/
 *.log
 .DS_Store
 Thumbs.db
+opencode.json

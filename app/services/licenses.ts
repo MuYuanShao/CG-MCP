@@ -25,6 +25,7 @@ export type LicenseSearchParams = {
 };
 
 export type LicenseSavePayload = {
+  productId?: number;
   licenseCode: string;
   licenseName: string;
   licenseType: string;

@@ -107,10 +107,10 @@ export default function RefundManagement() {
 
   const refundsQuery = useQuery({
     queryKey: refundQueryKey,
-    queryFn: listRefunds,
+    queryFn: () => listRefunds(),
   });
 
-  const refunds = refundsQuery.data ?? [];
+  const refunds = refundsQuery.data?.records ?? [];
 
   const updateRefundCache = (updated: RefundItem) => {
     queryClient.setQueryData<RefundItem[]>(refundQueryKey, (current = refunds) =>

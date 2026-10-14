@@ -1,4 +1,4 @@
-import { requestJson } from '../lib/api';
+import { clearAuthToken, requestJson, setAuthToken } from '../lib/api';
 
 export type LoginResponse = {
   token: string;
@@ -7,10 +7,26 @@ export type LoginResponse = {
   permissions: string[];
 };
 
-function storeAuth(data: LoginResponse) {
-  window.localStorage.removeItem('spd_refresh_token');
-  window.localStorage.setItem('spd_auth_token', data.token);
-  window.localStorage.setItem('spd_auth_user', JSON.stringify(data));
+/** User info persisted across refreshes (never contains the access token). */
+export type StoredUser = Omit<LoginResponse, 'token'>;
+
+function storeUserInfo(data: LoginResponse) {
+  const { token: _token, ...userInfo } = data;
+  setAuthToken(_token);
+  try {
+    sessionStorage.setItem('spd_auth_user', JSON.stringify(userInfo));
+  } catch {
+    // sessionStorage may be unavailable (private browsing, etc.)
+  }
+}
+
+function clearSession() {
+  clearAuthToken();
+  try {
+    sessionStorage.removeItem('spd_auth_user');
+  } catch {
+    // ignore
+  }
 }
 
 export async function login(username: string, password: string) {
@@ -18,15 +34,16 @@ export async function login(username: string, password: string) {
     method: 'POST',
     body: JSON.stringify({ username, password }),
   });
-  storeAuth(result.data);
+  storeUserInfo(result.data);
   return result.data;
 }
 
 export async function refreshAuth() {
+  clearAuthToken();
   const result = await requestJson<LoginResponse>('/auth/refresh', {
     method: 'POST',
   });
-  storeAuth(result.data);
+  storeUserInfo(result.data);
   return result.data;
 }
 
@@ -36,22 +53,18 @@ export async function logout() {
       method: 'POST',
     });
   } catch {
+    // best-effort
   }
-  window.localStorage.removeItem('spd_auth_token');
-  window.localStorage.removeItem('spd_refresh_token');
-  window.localStorage.removeItem('spd_auth_user');
+  clearSession();
 }
 
-export function getStoredAuthUser() {
-  window.localStorage.removeItem('spd_refresh_token');
-  const raw = window.localStorage.getItem('spd_auth_user');
-  if (!raw) return null;
+export function getStoredAuthUser(): StoredUser | null {
   try {
-    return JSON.parse(raw) as LoginResponse;
+    const raw = sessionStorage.getItem('spd_auth_user');
+    if (!raw) return null;
+    return JSON.parse(raw) as StoredUser;
   } catch {
-    window.localStorage.removeItem('spd_auth_token');
-    window.localStorage.removeItem('spd_refresh_token');
-    window.localStorage.removeItem('spd_auth_user');
+    clearSession();
     return null;
   }
 }

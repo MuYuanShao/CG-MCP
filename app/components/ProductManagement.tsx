@@ -12,6 +12,7 @@ import {
   ChevronDown,
 } from 'lucide-react';
 import { useFeedback } from './AppFeedback';
+import SpdDispatchDialog from './SpdDispatchDialog';
 import {
   createProduct,
   deleteProducts,
@@ -20,6 +21,7 @@ import {
   updateProduct,
   type ProductPayload,
 } from '../services/products';
+import { listCategories, categoryQueryKey } from '../services/categories';
 
 interface Product {
   id: number;
@@ -280,7 +282,7 @@ const mockProducts: Product[] = [
   },
 ];
 
-export default function ProductManagement() {
+export default function ProductManagement({ canDispatch = false }: { canDispatch?: boolean }) {
   const queryClient = useQueryClient();
   const { notify, confirm } = useFeedback();
   const [showDialog, setShowDialog] = useState(false);
@@ -291,6 +293,7 @@ export default function ProductManagement() {
   const [selectedRows, setSelectedRows] = useState<number[]>([]);
   const [selectedZcCode, setSelectedZcCode] = useState<string>('');
   const [zcCatalogQuery, setZcCatalogQuery] = useState(defaultZcCatalogQuery);
+  const [submittedZcQuery, setSubmittedZcQuery] = useState(defaultZcCatalogQuery);
   const [searchForm, setSearchForm] = useState({
     name: '',
     manufacturer: '',
@@ -309,25 +312,30 @@ export default function ProductManagement() {
 
   const productsQuery = useQuery({
     queryKey: productQueryKey,
-    queryFn: listProducts,
+    queryFn: () => listProducts(),
   });
-  const products = productsQuery.data ?? mockProducts;
+  const products = productsQuery.data?.records ?? [];
+  const categoriesQuery = useQuery({
+    queryKey: categoryQueryKey,
+    queryFn: listCategories,
+  });
+  const categories = categoriesQuery.data ?? [];
   const filteredZcCatalog = mockZcCatalog.filter((item) =>
-    (!zcCatalogQuery.hospListId || item.hospListId.includes(zcCatalogQuery.hospListId)) &&
-    (!zcCatalogQuery.mcsProdCode || item.mcsProdCode.includes(zcCatalogQuery.mcsProdCode)) &&
-    (!zcCatalogQuery.prodCode || item.prodCode.includes(zcCatalogQuery.prodCode)) &&
-    (!zcCatalogQuery.itemname || item.itemname.includes(zcCatalogQuery.itemname)) &&
-    (!zcCatalogQuery.prodName || item.prodName.includes(zcCatalogQuery.prodName)) &&
-    (!zcCatalogQuery.mcsMol || item.mcsMol.includes(zcCatalogQuery.mcsMol)) &&
-    (!zcCatalogQuery.prodSpec || item.prodSpec.includes(zcCatalogQuery.prodSpec)) &&
-    (!zcCatalogQuery.minpacuntName || item.minpacuntName.includes(zcCatalogQuery.minpacuntName)) &&
-    (!zcCatalogQuery.aprvno || item.aprvno.includes(zcCatalogQuery.aprvno)) &&
-    (!zcCatalogQuery.regcert || item.regcert.includes(zcCatalogQuery.regcert)) &&
-    (!zcCatalogQuery.regcertExpy || item.regcertExpy.includes(zcCatalogQuery.regcertExpy)) &&
-    (!zcCatalogQuery.listAttrCode || item.listAttrCode.includes(zcCatalogQuery.listAttrCode)) &&
-    (!zcCatalogQuery.listAttrName || item.listAttrName.includes(zcCatalogQuery.listAttrName)) &&
-    (!zcCatalogQuery.pubonlnPric || item.pubonlnPric.includes(zcCatalogQuery.pubonlnPric)) &&
-    (!zcCatalogQuery.delventpName || item.delventpName.includes(zcCatalogQuery.delventpName))
+    (!submittedZcQuery.hospListId || item.hospListId.includes(submittedZcQuery.hospListId)) &&
+    (!submittedZcQuery.mcsProdCode || item.mcsProdCode.includes(submittedZcQuery.mcsProdCode)) &&
+    (!submittedZcQuery.prodCode || item.prodCode.includes(submittedZcQuery.prodCode)) &&
+    (!submittedZcQuery.itemname || item.itemname.includes(submittedZcQuery.itemname)) &&
+    (!submittedZcQuery.prodName || item.prodName.includes(submittedZcQuery.prodName)) &&
+    (!submittedZcQuery.mcsMol || item.mcsMol.includes(submittedZcQuery.mcsMol)) &&
+    (!submittedZcQuery.prodSpec || item.prodSpec.includes(submittedZcQuery.prodSpec)) &&
+    (!submittedZcQuery.minpacuntName || item.minpacuntName.includes(submittedZcQuery.minpacuntName)) &&
+    (!submittedZcQuery.aprvno || item.aprvno.includes(submittedZcQuery.aprvno)) &&
+    (!submittedZcQuery.regcert || item.regcert.includes(submittedZcQuery.regcert)) &&
+    (!submittedZcQuery.regcertExpy || item.regcertExpy.includes(submittedZcQuery.regcertExpy)) &&
+    (!submittedZcQuery.listAttrCode || item.listAttrCode.includes(submittedZcQuery.listAttrCode)) &&
+    (!submittedZcQuery.listAttrName || item.listAttrName.includes(submittedZcQuery.listAttrName)) &&
+    (!submittedZcQuery.pubonlnPric || item.pubonlnPric.includes(submittedZcQuery.pubonlnPric)) &&
+    (!submittedZcQuery.delventpName || item.delventpName.includes(submittedZcQuery.delventpName))
   );
 
   const deleteProductsMutation = useMutation({
@@ -595,6 +603,7 @@ export default function ProductManagement() {
       {/* Action Bar */}
       <div className="p-4 border border-border rounded-lg bg-background">
         <div className="flex items-center gap-2 flex-wrap">
+          {canDispatch && <SpdDispatchDialog productIds={selectedRows} />}
           <button
             onClick={() => handleOpenDialog('add')}
             className="px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:opacity-90 transition-opacity flex items-center gap-2"
@@ -845,7 +854,7 @@ export default function ProductManagement() {
                   </div>
                   <div>
                     <label className="block text-sm mb-2">
-                      分类 <span className="text-destructive">*</span>
+                      分类
                     </label>
                     <select
                       className="w-full px-3 py-2 border border-border rounded-lg bg-input-background focus:outline-none focus:ring-2 focus:ring-ring"
@@ -853,10 +862,9 @@ export default function ProductManagement() {
                       onChange={(e) => setFormData({ ...formData, category: e.target.value })}
                     >
                       <option value="">请选择分类</option>
-                      <option value="高值耗材">高值耗材</option>
-                      <option value="低值耗材">低值耗材</option>
-                      <option value="医疗设备">医疗设备</option>
-                      <option value="其他">其他</option>
+                      {categories.map((cat) => (
+                        <option key={cat.id} value={cat.categoryName}>{cat.categoryName}</option>
+                      ))}
                     </select>
                   </div>
                   <div>
@@ -1181,12 +1189,33 @@ export default function ProductManagement() {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-background rounded-lg shadow-lg w-full max-w-4xl max-h-[90vh] overflow-y-auto">
             <div className="px-6 py-4 border-b border-border flex items-center justify-between sticky top-0 bg-background z-10">
-              <h2 className="text-xl font-medium">招采子目录查询</h2>
+              <div className="flex items-center gap-4">
+                <h2 className="text-xl font-medium">招采子目录查询</h2>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setSubmittedZcQuery(zcCatalogQuery)}
+                    className="px-4 py-1.5 bg-primary text-primary-foreground rounded-lg hover:opacity-90 transition-opacity flex items-center gap-1.5 text-sm"
+                  >
+                    <Search className="size-3.5" />
+                    查询
+                  </button>
+                  <button
+                    onClick={() => {
+                      setZcCatalogQuery(defaultZcCatalogQuery);
+                      setSubmittedZcQuery(defaultZcCatalogQuery);
+                    }}
+                    className="px-4 py-1.5 border border-border rounded-lg hover:bg-accent transition-colors text-sm"
+                  >
+                    重置
+                  </button>
+                </div>
+              </div>
               <button
                 onClick={() => {
                   setShowZcCatalogDialog(false);
                   setSelectedZcCode('');
                   setZcCatalogQuery(defaultZcCatalogQuery);
+                  setSubmittedZcQuery(defaultZcCatalogQuery);
                 }}
                 className="p-1 hover:bg-accent rounded transition-colors"
               >
@@ -1336,6 +1365,7 @@ export default function ProductManagement() {
                   setShowZcCatalogDialog(false);
                   setSelectedZcCode('');
                   setZcCatalogQuery(defaultZcCatalogQuery);
+                  setSubmittedZcQuery(defaultZcCatalogQuery);
                 }}
                 className="px-6 py-2 border border-border rounded-lg hover:bg-accent transition-colors"
               >
@@ -1348,6 +1378,7 @@ export default function ProductManagement() {
                     setShowZcCatalogDialog(false);
                     setSelectedZcCode('');
                     setZcCatalogQuery(defaultZcCatalogQuery);
+                    setSubmittedZcQuery(defaultZcCatalogQuery);
                   }
                 }}
                 disabled={!selectedZcCode}

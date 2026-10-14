@@ -85,30 +85,37 @@ SPD供应商采购平台是面向医疗器械/耗材供应商的B2B采购管理�
 
 ### 3.1 后端技术栈
 
-| 层次 | 技术 | 版本 | 选型依据 |
-|------|------|------|----------|
-| 核心框架 | Spring Boot | 3.2.x | 生态成熟、社区活跃、企业级首选 |
-| 安全框架 | Spring Security + JWT | — | 细粒度权限控制、无状态Token认证 |
-| ORM框架 | MyBatis-Plus | 3.5.x | 灵活SQL、多租户插件、代码生成 |
-| 数据库 | MySQL | 8.0 | InnoDB事务支持、行级锁、成熟稳定 |
-| 缓存 | Redis | 7.x | 会话管理、字典缓存、分布式锁、库存扣减 |
-| 消息队列 | RabbitMQ | 3.12.x | 可靠消息投递、死信队列、订单异步处理 |
-| 文件存储 | MinIO | — | S3兼容、私有化部署、证照文件存储 |
-| 接口文档 | Knife4j (Swagger) | 4.x | 接口文档自动生成、在线调试 |
-| 分布式ID | Snowflake | — | 趋势递增、高性能、无依赖 |
-| 任务调度 | XXL-Job | — | 分布式调度、效期预警定时任务 |
-| 日志框架 | Logback + ELK | — | 结构化日志、集中检索 |
+实际已用技术（✅）与规划中技术（📋）：
+
+| 层次 | 技术 | 版本 | 选型依据 | 状态 |
+|------|------|------|----------|------|
+| 核心框架 | Spring Boot | 3.3.6 | 生态成熟、社区活跃、企业级首选 | ✅ |
+| 安全框架 | 自定义 JWT Filter + ApiKeyFilter | — | 轻量 API Key + JWT Bearer Token + httpOnly Refresh Cookie | ✅ |
+| 数据访问 | Spring JDBC (JdbcTemplate) | — | 灵活SQL、无额外ORM开销 | ✅ |
+| 数据库迁移 | Flyway | — | SQL版本控制、可重复迁移 | ✅ |
+| 数据库 | MySQL | 8.0 | InnoDB事务支持、行级锁、成熟稳定 | ✅ |
+| 接口文档 | springdoc-openapi (Swagger) | — | 接口文档自动生成、在线调试 | ✅ |
+| 分布式ID | Snowflake | — | 趋势递增、高性能、无依赖 | ✅ |
+| 缓存 | Redis | 7.x | 会话管理、字典缓存、分布式锁、库存扣减 | 📋 规划中 |
+| 消息队列 | RabbitMQ | 3.12.x | 可靠消息投递、死信队列、订单异步处理 | 📋 规划中 |
+| 文件存储 | MinIO | — | S3兼容、私有化部署、证照文件存储 | 📋 规划中 |
+| 安全框架 | Spring Security | — | 细粒度权限控制 | 📋 可替代自定义 Filter |
+| 任务调度 | XXL-Job | — | 分布式调度、效期预警定时任务 | 📋 规划中 |
+| 日志框架 | Logback + ELK | — | 结构化日志、集中检索 | 📋 ELK 规划中 |
 
 ### 3.2 前端技术栈
 
 | 层次 | 技术 | 选型依据 |
 |------|------|----------|
-| 框架 | Vue 3 + TypeScript | 组合式API、类型安全、生态丰富 |
-| UI组件库 | Element Plus | 企业级组件、表格/表单场景成熟 |
-| 状态管理 | Pinia | 轻量、TypeScript友好 |
-| 路由 | Vue Router 4 | 路由守卫、动态路由（权限驱动） |
-| HTTP客户端 | Axios | 拦截器、统一错误处理 |
-| 构建工具 | Vite | 极速HMR、按需加载 |
+| 框架 | React 18 + TypeScript | Hooks、类型安全、生态丰富 |
+| UI组件库 | shadcn/ui (Radix Primitives) | 无障碍、可定制、按需加载 |
+| 状态管理 | TanStack React Query 5 | 服务端状态管理、缓存、自动重新获取 |
+| 路由 | react-router 7 | 布局嵌套路由、loader/action 数据加载 |
+| HTTP客户端 | fetch 封装 (requestJson/requestFormData) | 轻量统一错误处理、自动Token注入 |
+| 构建工具 | Vite 6 | 极速HMR、按需加载 |
+| 表单校验 | Zod | 运行时类型校验、与 TypeScript 类型推导集成 |
+| 样式方案 | Tailwind CSS 4 | 原子化CSS、按需生成 |
+| 通知组件 | Sonner | 轻量、可定制、无障碍 |
 
 ### 3.3 运维与部署
 

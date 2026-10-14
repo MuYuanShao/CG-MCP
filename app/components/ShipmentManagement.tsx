@@ -45,15 +45,15 @@ export default function ShipmentManagement() {
 
   const shipmentsQuery = useQuery({
     queryKey: ['shipment-orders'],
-    queryFn: listShipmentOrders,
+    queryFn: () => listShipmentOrders(),
   });
   const deliveriesQuery = useQuery({
     queryKey: ['delivery-orders'],
-    queryFn: listDeliveryOrders,
+    queryFn: () => listDeliveryOrders(),
   });
 
-  const shipments = shipmentsQuery.data ?? [];
-  const deliveries = deliveriesQuery.data ?? [];
+  const shipments = shipmentsQuery.data?.records ?? [];
+  const deliveries = deliveriesQuery.data?.records ?? [];
   const selectedShipment = shipments.find((shipment) => shipment.id === selectedShipmentRows[0]);
   const shipmentDeliveryNos = useMemo(() => new Set(shipments.map((shipment) => shipment.sourceNo)), [shipments]);
   const availableDeliveries = deliveries.filter((delivery) => !shipmentDeliveryNos.has(delivery.documentNo));

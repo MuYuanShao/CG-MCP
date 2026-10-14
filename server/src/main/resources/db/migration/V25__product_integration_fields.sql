@@ -1,0 +1,2 @@
+ALTER TABLE biz_product ADD COLUMN brand VARCHAR(100) NULL;
+ALTER TABLE biz_product ADD COLUMN distributor VARCHAR(200) NULL;

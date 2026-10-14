@@ -17,6 +17,8 @@ import {
   Eye,
 } from 'lucide-react';
 import { useFeedback } from './AppFeedback';
+import { useQuery } from '@tanstack/react-query';
+import { listProducts } from '../services/products';
 import {
   createLicense,
   deleteLicenses,
@@ -53,19 +55,20 @@ interface Product {
   category: string;
 }
 
-const mockProducts: Product[] = [
-  { id: 1, code: 'P001', name: '一次性无菌注射器(5ml)', spec: '5ml', manufacturer: '江苏医疗器械有限公司', category: '低值耗材' },
-  { id: 2, code: 'P002', name: '医用外科口罩', spec: '一次性', manufacturer: '浙江康健医疗用品公司', category: '低值耗材' },
-  { id: 3, code: 'P003', name: '输液器', spec: '精密过滤', manufacturer: '上海医疗科技股份公司', category: '低值耗材' },
-  { id: 4, code: 'P004', name: '心脏支架', spec: '药物洗脱', manufacturer: '美国强生医疗', category: '高值耗材' },
-  { id: 5, code: 'P005', name: '医用纱布', spec: '10cm×10cm', manufacturer: '河南医用材料厂', category: '低值耗材' },
-  { id: 6, code: 'P006', name: '人工关节', spec: '钛合金', manufacturer: '德国西门子医疗', category: '高值耗材' },
-  { id: 7, code: 'P007', name: '一次性手套', spec: '100只/盒', manufacturer: '广东医疗用品厂', category: '低值耗材' },
-  { id: 8, code: 'P008', name: '医用棉签', spec: '无菌', manufacturer: '浙江康健医疗用品公司', category: '低值耗材' },
-];
-
 export default function LicenseManagement() {
   const { confirm, notify } = useFeedback();
+  const productsQuery = useQuery({
+    queryKey: ['license-products'],
+    queryFn: async () => {
+      const products: Product[] = [];
+      for (let current = 1; ; current++) {
+        const page = await listProducts(current, 100);
+        products.push(...page.records);
+        if (!page.records.length || products.length >= page.total) return products;
+      }
+    },
+  });
+  const products = productsQuery.data ?? [];
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [licenses, setLicenses] = useState<License[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
@@ -102,6 +105,10 @@ export default function LicenseManagement() {
   });
 
   const handleOpenDialog = (mode: 'add' | 'edit') => {
+    if (mode === 'edit' && (productsQuery.isPending || productsQuery.isError)) {
+      notify.warning('商品目录尚未加载成功，请稍后重试');
+      return;
+    }
     setDialogMode(mode);
     if (mode === 'add') {
       setFormData({
@@ -121,7 +128,11 @@ export default function LicenseManagement() {
       if (license) {
         // 根据关联商品名称找到对应的Product对象
         const relatedProductNames = license.relatedProduct.split(', ').filter((name) => name !== '-');
-        const relatedProducts = mockProducts.filter((p) => relatedProductNames.includes(p.name));
+        const relatedProducts = products.filter((p) => relatedProductNames.includes(p.name));
+        if (relatedProductNames.some((name) => !products.some((p) => p.name === name))) {
+          notify.warning('关联商品不在当前目录中，请先核对商品资料');
+          return;
+        }
 
         setFormData({
           hospitalName: license.hospitalName,
@@ -147,7 +158,7 @@ export default function LicenseManagement() {
   };
 
   const handleProductSelectAll = () => {
-    const filteredProducts = mockProducts.filter((p) =>
+    const filteredProducts = products.filter((p) =>
       p.name.includes(productSearchQuery) ||
       p.code.includes(productSearchQuery) ||
       p.manufacturer.includes(productSearchQuery)
@@ -168,7 +179,7 @@ export default function LicenseManagement() {
   };
 
   const handleConfirmProducts = () => {
-    const selectedProductList = mockProducts.filter((p) => selectedProducts.includes(p.id));
+    const selectedProductList = products.filter((p) => selectedProducts.includes(p.id));
     setFormData({ ...formData, relatedProducts: selectedProductList });
     setShowProductDialog(false);
   };
@@ -217,7 +228,7 @@ export default function LicenseManagement() {
     void handleUploadLicenseImage(event.dataTransfer.files?.[0]);
   };
 
-  const isPdfFile = (fileUrl: string) => fileUrl.toLowerCase().split('?')[0].endsWith('.pdf');
+  const isPdfFile = (fileUrl: string | undefined | null) => fileUrl?.toLowerCase().split('?')[0]?.endsWith('.pdf') ?? false;
 
   const calculateExpiryStatus = (expiryDate: string): 'normal' | 'warning' | 'urgent' | 'critical' | 'expired' => {
     const today = new Date();
@@ -241,6 +252,7 @@ export default function LicenseManagement() {
       licenseName: `${formData.hospitalName}-${formData.licenseType}`,
       licenseType: formData.licenseType,
       relatedProduct,
+      productId: formData.relatedProducts.length === 1 ? formData.relatedProducts[0]?.id : undefined,
       hospitalName: formData.hospitalName,
       issueDate: formData.startDate,
       expiryDate: formData.endDate,
@@ -1103,6 +1115,8 @@ export default function LicenseManagement() {
               </div>
 
               {/* Product Table */}
+              {productsQuery.isPending && <p role="status">正在加载商品目录…</p>}
+              {productsQuery.isError && <p role="alert">商品目录加载失败：{productsQuery.error.message}<button onClick={() => productsQuery.refetch()}>重试</button></p>}
               <div className="border border-border rounded-lg overflow-hidden">
                 <div className="overflow-x-auto">
                   <table className="w-full">
@@ -1113,13 +1127,13 @@ export default function LicenseManagement() {
                             type="checkbox"
                             checked={
                               selectedProducts.length ===
-                              mockProducts.filter(
+                              products.filter(
                                 (p) =>
                                   p.name.includes(productSearchQuery) ||
                                   p.code.includes(productSearchQuery) ||
                                   p.manufacturer.includes(productSearchQuery)
                               ).length &&
-                              mockProducts.filter(
+                              products.filter(
                                 (p) =>
                                   p.name.includes(productSearchQuery) ||
                                   p.code.includes(productSearchQuery) ||
@@ -1148,7 +1162,7 @@ export default function LicenseManagement() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border">
-                      {mockProducts
+                      {products
                         .filter(
                           (p) =>
                             p.name.includes(productSearchQuery) ||

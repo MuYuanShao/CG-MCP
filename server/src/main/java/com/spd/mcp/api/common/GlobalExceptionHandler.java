@@ -8,6 +8,7 @@ import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -30,6 +31,13 @@ public class GlobalExceptionHandler {
   @ExceptionHandler(DuplicateKeyException.class)
   public ResponseEntity<ApiResponse<Void>> handleDuplicateKeyException(DuplicateKeyException exception) {
     return ResponseEntity.badRequest().body(ApiResponse.error("DUPLICATE_KEY", "编码或唯一字段已存在"));
+  }
+
+  @ExceptionHandler(NoResourceFoundException.class)
+  public ResponseEntity<ApiResponse<Void>> handleNoResourceFoundException(NoResourceFoundException exception) {
+    return ResponseEntity
+        .status(org.springframework.http.HttpStatus.NOT_FOUND)
+        .body(ApiResponse.error("NOT_FOUND", "请求的资源不存在"));
   }
 
   @ExceptionHandler(Exception.class)

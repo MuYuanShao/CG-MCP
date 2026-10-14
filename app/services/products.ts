@@ -1,4 +1,5 @@
 import { requestJson } from '../lib/api';
+import type { PageResult } from './purchase';
 
 export type ProductItem = {
   id: number;
@@ -30,8 +31,12 @@ export type ProductPayload = Omit<ProductItem, 'id'>;
 
 export const productQueryKey = ['products'] as const;
 
-export async function listProducts() {
-  const result = await requestJson<ProductItem[]>('/products');
+export async function listProducts(current = 1, size = 20) {
+  const search = new URLSearchParams({ current: String(current), size: String(size) });
+  const result = await requestJson<PageResult<ProductItem> | ProductItem[]>(`/products?${search.toString()}`);
+  if (Array.isArray(result.data)) {
+    return { records: result.data, total: result.data.length, current: 1, size: result.data.length };
+  }
   return result.data;
 }
 
