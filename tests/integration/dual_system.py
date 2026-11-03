@@ -7,6 +7,7 @@ import base64
 import concurrent.futures
 import bcrypt
 import datetime as dt
+from decimal import Decimal
 import hashlib
 import http.cookiejar
 import json
@@ -67,7 +68,7 @@ def launch(args, log_name, env=None, cwd=ROOT):
     return p
 
 
-def request(base, path, method="GET", body=None, token=None, spd_token=None, tenant=1, opener=None, raw=None, content_type=None):
+def request(base, path, method="GET", body=None, token=None, spd_token=None, tenant=1, opener=None, raw=None, content_type=None, idempotency_key=None):
     headers = {"Content-Type": content_type or "application/json"}
     if base == MCP_URL:
         headers.update({"x-api-key": SECRET, "x-tenant-id": str(tenant)})
@@ -75,6 +76,8 @@ def request(base, path, method="GET", body=None, token=None, spd_token=None, ten
         headers["Authorization"] = "Bearer " + token
     if spd_token:
         headers["x-spd-token"] = spd_token
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
     data = raw if raw is not None else (None if body is None else json.dumps(body, ensure_ascii=False).encode())
     req = urllib.request.Request(base + path, data=data, headers=headers, method=method)
     try:
@@ -157,6 +160,33 @@ def check_category_api(mcp):
     check(status == 403 and body.get("code") == "PERMISSION_DENIED", "分类无维护权限账户被拒绝")
 
 
+
+def check_concurrent_plan_conversion(token, due):
+    number = "IT_DOUBLE_" + secrets.token_hex(4)
+    sql(f"INSERT INTO biz_purchase_plan(id,tenant_id,plan_no,hospital_id,product_id,plan_qty,unit_price,expected_delivery_date,status) VALUES(900012,1,'{number}',1,1,10,2,'{due}',3);", "mcp_it")
+    env = os.environ.copy()
+    env["MYSQL_PWD"] = DB_PASSWORD
+    locker = subprocess.Popen([str(MYSQL_BIN / "mysql.exe"), "--no-defaults", "--protocol=TCP", "--host=127.0.0.1", f"--port={MYSQL_PORT}", "--user=root", "--batch", "--raw", "--skip-column-names", "--unbuffered", "mcp_it"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, creationflags=FLAGS)
+    PROCESSES.append(locker)
+    locker.stdin.write(b"START TRANSACTION; SELECT next_id FROM sys_id_sequence WHERE table_name='biz_purchase_order' FOR UPDATE;\n")
+    locker.stdin.flush()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+        check(pool.submit(locker.stdout.readline).result(timeout=10).strip().isdigit(), "并发转单序列屏障已建立")
+        first = pool.submit(request, MCP_URL, f"/purchase-plans/{number}/delivery-edit", "POST", None, token)
+        wait("第一次转单到达锁屏障", lambda: int(sql("SELECT COUNT(*) FROM performance_schema.data_lock_waits;")) >= 1, 10)
+        second = pool.submit(request, MCP_URL, f"/purchase-plans/{number}/delivery-edit", "POST", None, token)
+        wait("两次转单同时处于事务中", lambda: int(sql("SELECT COUNT(*) FROM performance_schema.data_lock_waits;")) >= 2, 10)
+        locker.stdin.write(b"COMMIT;\n")
+        locker.stdin.flush()
+        results = [first.result(timeout=30), second.result(timeout=30)]
+        check(sorted(r[0] for r in results) == [200, 400], "同一计划并发转单仅一次成功")
+    locker.stdin.close()
+    locker.wait(timeout=10)
+    count_and_amount=sql("SELECT COUNT(*),SUM(total_amount) FROM biz_purchase_order WHERE tenant_id=1 AND plan_id=900012 AND deleted=0;", "mcp_it").split("\t")
+    check(count_and_amount[0] == "1" and Decimal(count_and_amount[1]) == Decimal("20"), "并发转单只落一张20元订单")
+    check(sql("SELECT SUM(i.delivered_qty) FROM biz_purchase_order o JOIN biz_delivery_order d ON d.order_id=o.id AND d.tenant_id=o.tenant_id JOIN biz_delivery_order_item i ON i.delivery_id=d.id AND i.tenant_id=d.tenant_id WHERE o.tenant_id=1 AND o.plan_id=900012 AND o.deleted=0;", "mcp_it") == "10", "并发转换配送数量不超过计划10件")
+
+
 def main():
     global INSTANCE
     RUN.mkdir(parents=True)
@@ -178,7 +208,7 @@ def main():
     env = os.environ.copy()
     env.update({"SERVER_PORT": str(MCP_PORT), "SPRING_PROFILES_ACTIVE": "test", "SPRING_DATASOURCE_URL": f"jdbc:mysql://127.0.0.1:{MYSQL_PORT}/mcp_it?serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false",
                 "SPRING_DATASOURCE_USERNAME": "root", "SPRING_DATASOURCE_PASSWORD": DB_PASSWORD,
-                "APP_API_KEY": SECRET, "APP_AUTH_TOKEN_SECRET": SECRET, "APP_ADMIN_USERNAME": "e2e_admin", "APP_ADMIN_PASSWORD": PASSWORD,
+                "APP_PHASE3_ENABLED": "true", "APP_API_KEY": SECRET, "APP_AUTH_TOKEN_SECRET": SECRET, "APP_ADMIN_USERNAME": "e2e_admin", "APP_ADMIN_PASSWORD": PASSWORD,
                 "SPD_PR_MAIN_TOKEN": SECRET, "APP_UPLOAD_ROOT_DIR": str(RUN / "mcp-uploads"), "APP_LICENSE_UPLOAD_DIR": str(RUN / "mcp-uploads/licenses")})
     launch(["java", "-jar", str(ROOT / "server/target/spd-mcp-api.jar"), "--server.address=127.0.0.1"], "mcp-backend.log", env)
     wait("MCP-UI真实迁移及启动", lambda: health(MCP_URL), 100)
@@ -200,6 +230,8 @@ def main():
     delivery = api(MCP_URL, f"/purchase-plans/{plan_no}/delivery-edit", "POST", token=mcp)
     native_orders = api(MCP_URL, "/purchase-orders", token=mcp)
     check(any(o["id"] == delivery["orderId"] for o in native_orders), "原生采购订单接口返回真实新订单")
+    check(Decimal(sql(f"SELECT total_amount FROM biz_purchase_order WHERE id={delivery['orderId']} AND tenant_id=1;", "mcp_it")) == Decimal("24"), "计划12件乘2元实际转换为24元订单")
+    check(sql(f"SELECT SUM(plan_qty),SUM(delivered_qty) FROM biz_delivery_order_item WHERE delivery_id={delivery['deliveryId']} AND tenant_id=1 AND deleted=0;", "mcp_it").split("\t") == ["12", "12"], "转单配送明细保留计划及实配数量12件")
     status, _ = request(MCP_URL, "/purchase-plans/900010", "PUT", correction, mcp)
     check(status == 400, "已转单计划不可继续编辑")
     race_no = "IT_RACE_" + secrets.token_hex(4)
@@ -223,6 +255,7 @@ def main():
     locker.stdin.close()
     locker.wait(timeout=10)
     check(sql("SELECT plan_qty,unit_price FROM biz_purchase_plan WHERE id=900011;", "mcp_it").split("\t") == ["10", "2.0000"], "并发编辑未改写已转单数量及单价")
+    check_concurrent_plan_conversion(mcp, due)
     cfg = {"name": "隔离联调医院", "organization": "E2E_HOSPITAL", "endpoint": SPD_URL + "/mcp/receive", "tokenEnv": "SPD_PR_MAIN_TOKEN", "enabled": True}
     INSTANCE = api(MCP_URL, "/integration/instances", "POST", cfg, mcp)["id"]
     emit("MCP-UI创建真实对接实例")
@@ -235,13 +268,13 @@ def main():
                 "SPD_MCP_CURRENCY": "CNY", "SPD_MCP_TAX_INCLUDED": "true", "SPD_MCP_SOURCE_ZONE": "Asia/Shanghai", "SPD_MCP_PHASE2_UPLOAD_ENABLED": "true", "SPD_UPLOAD_DIR": str(RUN / "spd-uploads")})
     jars = list((SPD / "backend/target").glob("*.jar"))
     check(bool(jars), "SPD-PR联调jar可用")
-    launch(["java", "-jar", str(jars[0]), f"--server.port={SPD_PORT}", "--server.address=127.0.0.1", "--spd.mcp.upload-delay-ms=2000"], "spd-backend.log", env, SPD)
+    launch(["java", "-jar", str(jars[0]), f"--server.port={SPD_PORT}", "--server.address=127.0.0.1", "--spd.mcp.upload-delay-ms=2000", "--logging.level.com.hospital.spd.integration.McpUploadJob=WARN"], "spd-backend.log", env, SPD)
     wait("SPD-PR真实迁移及启动", lambda: health(SPD_URL), 150)
     encrypted = bcrypt.hashpw(PASSWORD.encode(), bcrypt.gensalt()).decode()
     admin_id = int(sql("SELECT user_id FROM sys_user WHERE username='admin';", "spd_it"))
     sql(f"UPDATE sys_user SET password='{encrypted}',status=1,login_fail_count=0,lock_time=NULL WHERE user_id={admin_id}; INSERT INTO sys_user(user_id,username,password,real_name,status,dept_id) SELECT 900001,'e2e_receiver','{encrypted}','联调接收账户',1,dept_id FROM sys_user WHERE user_id={admin_id}; INSERT INTO sys_user_role(user_id,role_id) SELECT 900001,role_id FROM sys_user_role WHERE user_id={admin_id};", "spd_it")
     spd = api(SPD_URL, "/auth/login", "POST", {"username": "admin", "password": PASSWORD})["token"]
-    connection = {"configType": "integration", "scopeType": "global", "scopeId": "default", "configKey": "integration.mcp-ui.connection", "configValue": json.dumps({"protocol": "http", "host": "127.0.0.1", "port": MCP_PORT, "phase2Enabled": True}), "effectiveMode": "realtime", "expireTime": "", "riskLevel": "low", "status": 1}
+    connection = {"configType": "integration", "scopeType": "global", "scopeId": "default", "configKey": "integration.mcp-ui.connection", "configValue": json.dumps({"protocol": "http", "host": "127.0.0.1", "port": MCP_PORT, "phase2Enabled": True, "phase3Enabled": True}), "effectiveMode": "realtime", "expireTime": "", "riskLevel": "low", "status": 1}
     api(SPD_URL, "/system-config", "POST", connection, spd)
     emit("通过系统设置API保存IP端口，覆盖故意错误的旧环境地址")
     source_company = sql("SELECT manufacturer_name FROM manufacturer WHERE status=1 AND deleted=0 LIMIT 1;", "spd_it")
@@ -269,7 +302,17 @@ def main():
     renewed = api(MCP_URL, f"/integration/instances/{INSTANCE}/dispatch", "POST", {"productIds": [product["id"]], "licensesOnly": True}, mcp)
     check(renewed[0]["state"] == "processed", "待审批阶段独立重发证照成功", renewed[0]["message"])
     check(sql(f"SELECT registration_expire_date FROM pending_product_application WHERE application_no='{pending_no}';", "spd_it") == renewed_expiry, "独立重发同步更新申请注册证有效期")
+    extra_license = dict(license_body, licenseCode="PENDING_OLD_" + key, licenseName="审批中改号测试", licenseType="生产许可证")
+    extra_id = api(MCP_URL, "/licenses", "POST", extra_license, mcp)["id"]
+    extra_dispatch = api(MCP_URL, f"/integration/instances/{INSTANCE}/dispatch", "POST", {"productIds": [product["id"]], "licensesOnly": True}, mcp)
+    check(extra_dispatch[0]["state"] == "processed", "审批前附加来源证照接收成功")
+    extra_license["licenseCode"] = "PENDING_NEW_" + key
+    api(MCP_URL, f"/licenses/{extra_id}", "PUT", extra_license, mcp)
+    renamed_pending = api(MCP_URL, f"/integration/instances/{INSTANCE}/dispatch", "POST", {"productIds": [product["id"]], "licensesOnly": True}, mcp)
+    check(renamed_pending[0]["state"] == "processed", "同一待审批证照修改编号后重发成功")
+    check(sql(f"SELECT COUNT(*) FROM sys_attachment a JOIN pending_product_application p ON p.application_id=a.biz_id WHERE p.application_no='{pending_no}' AND a.biz_type='pending_product_application' AND a.deleted=0;", "spd_it") == "2", "审批中改号替换旧文件而不是累计第三份附件")
     approve_application(spd, pending_no)
+    check(sql(f"SELECT COUNT(*) FROM sys_attachment a JOIN product p ON p.product_id=a.biz_id WHERE p.product_code='{code}' AND a.biz_type='product' AND a.deleted=0;", "spd_it") == "2", "审批后只提升两份当前证照，没有改号旧附件")
     check(sql(f"SELECT COUNT(*) FROM product WHERE product_code='{code}';", "spd_it") == "1", "真实审批后进入院内目录")
     check(sql(f"SELECT registration_expire_date FROM product WHERE product_code='{code}';", "spd_it") == renewed_expiry, "审批落库使用续期后的有效期")
     # A approved -> independent B rejected -> independent C approved: retain the actual approved A target.
@@ -414,6 +457,26 @@ def main():
     qualification_no = sql(f"SELECT application_no FROM mcp_inbound_product WHERE product_code='{code}';", "spd_it")
     approve_application(spd, qualification_no)
     check(sql(f"SELECT status FROM product WHERE product_code='{code}';", "spd_it") == "0", "仅资质审批不会意外启用已停用商品")
+    reactivated = api(MCP_URL, f"/integration/instances/{INSTANCE}/dispatch", "POST", {"productIds": [product["id"]], "licensesOnly": False}, mcp)
+    check(reactivated[0]["state"] == "processed", "停用商品收到active后创建启用审批")
+    enable_no = sql(f"SELECT application_no FROM mcp_inbound_product WHERE product_code='{code}';", "spd_it")
+    check(sql(f"SELECT status FROM product WHERE product_code='{code}';", "spd_it") == "0", "启用下发未绕过院内审批")
+    check(sql(f"SELECT JSON_UNQUOTE(JSON_EXTRACT(product_snapshot,'$.targetStatus')) FROM pending_product_application WHERE application_no='{enable_no}';", "spd_it") == "1", "启用意图进入服务端审批快照")
+    renewal_during_enable = api(MCP_URL, f"/integration/instances/{INSTANCE}/dispatch", "POST", {"productIds": [product["id"]], "licensesOnly": True}, mcp)
+    check(renewal_during_enable[0]["state"] == "processed", "启用待审批期间仍可重发证照")
+    check(sql(f"SELECT JSON_UNQUOTE(JSON_EXTRACT(product_snapshot,'$.targetStatus')) FROM pending_product_application WHERE application_no='{enable_no}';", "spd_it") == "1", "独立证照更新不抹掉尚待审批的启用意图")
+    approve_application(spd, enable_no)
+    check(sql(f"SELECT status FROM product WHERE product_code='{code}';", "spd_it") == "1", "审批通过后active真正恢复启用")
+    obsolete_ids=[]
+    for i in range(11):
+        historical=dict(license_body,licenseCode=f"HIST_{key}_{i}",licenseName="撤销历史证照",licenseType="其他证照",productId=product["id"],relatedProduct=active_product["name"])
+        obsolete_ids.append(api(MCP_URL,"/licenses","POST",historical,mcp)["id"])
+    api(MCP_URL,"/licenses","DELETE",{"ids":obsolete_ids},mcp)
+    with_history=api(MCP_URL,f"/integration/instances/{INSTANCE}/dispatch","POST",{"productIds":[product["id"]],"licensesOnly":True},mcp)
+    check(with_history[0]["state"] == "processed", "超过十份软删除历史证照不阻断当前证照下发")
+    historical_identity_list=",".join(str(int(identity)) for identity in obsolete_ids)
+    history_count=sql(f"SELECT COUNT(*) FROM mcp_license_intent intent JOIN mcp_inbound_product p ON p.source_product_id=intent.source_product_id AND p.application_no=intent.application_no WHERE p.product_code='{code}' AND intent.source_license_id IN ({historical_identity_list}) AND JSON_UNQUOTE(JSON_EXTRACT(intent.metadata,'$.status'))='revoked';", "spd_it")
+    check(history_count == "11", "撤销元数据完整接收，没有为绕过额度丢弃撤销", "received=" + history_count)
     nofile_code = "IT_NOFILE_" + secrets.token_hex(4)
     nofile_product = api(MCP_URL, "/products", "POST", {"code": nofile_code, "name": "无附件回归商品", "spec": "1ml", "model": "NOFILE", "unitPrice": 1, "unit": "支", "category": "低值耗材", "manufacturer": source_company, "distributor": supplier[1], "status": "active"}, mcp)
     nofile_dispatch = api(MCP_URL, f"/integration/instances/{INSTANCE}/dispatch", "POST", {"productIds": [nofile_product["id"]], "licensesOnly": False}, mcp)
@@ -422,8 +485,12 @@ def main():
     approve_application(spd, nofile_application)
     nofile_detail = api(SPD_URL, f"/master-data/hospital-products/{nofile_code}", token=spd)
     check(nofile_detail["attachments"] == [], "无真实附件商品详情不伪造PDF")
-    check(sql("SELECT MAX(CAST(version AS UNSIGNED)) FROM flyway_schema_history WHERE success=1;", "spd_it") == "92", "SPD-PR迁移执行到V92")
-    check(sql("SELECT MAX(CAST(version AS UNSIGNED)) FROM flyway_schema_history WHERE success=1;", "mcp_it") == "27", "MCP-UI迁移执行到V27")
+    expected_spd = max(int(p.name.split("__",1)[0][1:]) for p in (SPD / "backend/src/main/resources/db/migration").glob("V*__*.sql"))
+    check(int(sql("SELECT MAX(CAST(version AS UNSIGNED)) FROM flyway_schema_history WHERE success=1;", "spd_it")) == expected_spd, "SPD-PR迁移执行到当前源码版本")
+    expected_mcp = max(int(p.name.split("__",1)[0][1:]) for p in (ROOT / "server/src/main/resources/db/migration").glob("V*__*.sql"))
+    check(int(sql("SELECT MAX(CAST(version AS UNSIGNED)) FROM flyway_schema_history WHERE success=1;", "mcp_it")) == expected_mcp, "MCP-UI迁移执行到当前版本")
+    from phase3_acceptance import check_phase3
+    check_phase3(sys.modules[__name__], mcp, spd, supplier, source_company)
 
 
 if __name__ == "__main__":

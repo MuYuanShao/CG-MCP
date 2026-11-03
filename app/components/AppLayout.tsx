@@ -169,7 +169,7 @@ export default function AppLayout({ authUser, onLogout }: AppLayoutProps) {
               {(!sidebarCollapsed || isMobile) && (
                 <div className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{group.title}</div>
               )}
-              {group.items.filter(item => !['integration', 'settings'].includes(item.id) || authUser.permissions.includes('integration:read')).map((item) => (
+              {group.items.filter(item => !['integration', 'settings'].includes(item.id) || authUser.permissions.includes('integration:read') || (item.id === 'integration' && authUser.permissions.includes('integration:phase3:read'))).map((item) => (
                 <button key={item.id} onClick={() => { setActiveNav(item.id); if (isMobile) setMobileNavOpen(false); }}
                   className={`group relative flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-all ${activeNav === item.id ? 'bg-white text-slate-950 shadow-lg shadow-slate-950/20' : 'text-slate-300 hover:bg-white/[0.07] hover:text-white'}`}>
                   <span className={`flex size-8 shrink-0 items-center justify-center rounded-lg ${activeNav === item.id ? 'bg-cyan-100 text-cyan-700' : 'bg-white/[0.06] text-slate-400 group-hover:text-cyan-200'}`}>

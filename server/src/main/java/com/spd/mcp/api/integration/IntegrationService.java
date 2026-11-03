@@ -146,7 +146,10 @@ public class IntegrationService {
       if(count!=null && count>1) throw new BusinessException("LICENSE_AMBIGUOUS","同名商品证照关联不明确，请设置证照 product_id");
     }
     var licenses=new ArrayList<Map<String,Object>>();
-    if(licenseRows.size()>10) throw new BusinessException("LICENSE_LIMIT","商品 "+p.code()+" 最多同时下发10个证照");
+    // Revocation metadata must still reach SPD; it does not consume the ten current-file slots.
+    long currentLicenses=licenseRows.stream().filter(l->((Number)l.get("deleted")).intValue()==0 && ((Number)l.get("status")).intValue()!=2).count();
+    if(currentLicenses>10) throw new BusinessException("LICENSE_LIMIT","商品 "+p.code()+" 最多同时下发10个未撤销证照");
+    if(licenseRows.size()>1000) throw new BusinessException("LICENSE_LIMIT","商品证照及撤销元数据超过1000条传输上限");
     long attachmentBytes=0;
     for(var row:licenseRows) {
       var l=new LinkedHashMap<String,Object>();

@@ -30,18 +30,18 @@ public class SpdTransport {
       var request=HttpRequest.newBuilder(URI.create(instance.endpoint())).timeout(Duration.ofSeconds(15))
           .header("Authorization","Bearer "+secret).header("Content-Type","application/json")
           .header("Idempotency-Key",logId).POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(Map.of("syncId",logId,"sourceSystem","MCP-UI","organization",instance.organization(),"payload",payload)))).build();
-      var response=client.send(request,HttpResponse.BodyHandlers.ofInputStream());
-      try (var body=response.body()) {
+      var deadline=Duration.ofMillis(environment.getProperty("SPD_PR_HTTP_TIMEOUT_MS",Long.class,15000L));
+      var response=BoundedHttpClient.send(client,request,65536,deadline);
+      {
         if (response.statusCode()!=200 && response.statusCode()!=202) throw new BusinessException("SPD_HTTP_ERROR","SPD-PR 接口返回 HTTP "+response.statusCode());
-        byte[] bytes=body.readNBytes(65537);
-        if(bytes.length>65536) throw new BusinessException("SPD_RESPONSE_INVALID","SPD-PR 回执超过限制");
-        var node=mapper.readTree(bytes);
+        var node=mapper.readTree(response.body());
         String state=node.path("state").asText();
         if (!java.util.Set.of("accepted","processed","failed").contains(state) || (response.statusCode()==202 && !state.equals("accepted")))
           throw new BusinessException("SPD_RESPONSE_INVALID","SPD-PR 回执缺少合法处理状态");
         return new Receipt(state,node.path("message").asText(""),node.path("productCode").asText(""));
       }
-    } catch (BusinessException e) { throw e; }
+    } catch (BoundedHttpClient.ResponseTooLargeException e) { throw new BusinessException("SPD_RESPONSE_INVALID","SPD-PR 回执超过限制"); }
+    catch (BusinessException e) { throw e; }
     catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new BusinessException("SPD_INTERRUPTED","下发中断，可重试"); }
     catch (Exception e) { throw new BusinessException("SPD_NETWORK_ERROR","SPD-PR 网络或回执异常，可重试"); }
   }

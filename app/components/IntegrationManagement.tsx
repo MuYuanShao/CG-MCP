@@ -11,6 +11,7 @@ import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from '.
 import { useFeedback } from './AppFeedback';
 import SpdConnectionAddressFields from './SpdConnectionAddressFields';
 import Phase2Management from './Phase2Management';
+import Phase3Management from './Phase3Management';
 import { listInstances, saveInstance, listSyncLogs, retrySync, listIntegrationRecords, procurementReport, syncStates, orderStates, type InstancePayload, type SpdInstance, type Order, type Master, type PricePoint } from '../services/integration';
 
 const initial: InstancePayload = { name: '', organization: '', endpoint: '', tokenEnv: 'SPD_PR_MAIN_TOKEN', enabled: true };
@@ -18,7 +19,7 @@ const kinds: Record<string, string> = { product: '商品及证照', licenses: '�
 const formatNumber = (n: number) => n.toLocaleString('zh-CN', { maximumFractionDigits: 6 });
 const seriesKey = (p: PricePoint) => JSON.stringify([p.productCode, p.unit, p.currency, p.taxIncluded]);
 
-export default function IntegrationManagement({ permissions, settingsOnly = false }: { permissions: string[]; settingsOnly?: boolean }) {
+function LegacyIntegrationManagement({ permissions, settingsOnly = false }: { permissions: string[]; settingsOnly?: boolean }) {
   const client = useQueryClient();
   const { notify } = useFeedback();
   const canManage = permissions.includes('integration:manage');
@@ -59,7 +60,8 @@ export default function IntegrationManagement({ permissions, settingsOnly = fals
     {loading && <p role="status" className="text-sm text-muted-foreground">正在加载…</p>}
     {!instances.isLoading && !error && !id && <div className="rounded-lg border bg-background p-8 text-center text-muted-foreground">暂无对接实例，请先配置 SPD-PR。</div>}
     {settingsOnly && <section className="rounded-lg border bg-background p-4"><h2 className="mb-3 font-semibold">SPD-PR连接设置</h2><p className="mb-3 text-sm text-muted-foreground">点击新增实例或编辑配置，直接填写SPD-PR的IP地址／域名和端口。保存后商品下发自动使用新地址。</p><Table><TableHeader><TableRow><TableHead>实例</TableHead><TableHead>机构</TableHead><TableHead>接收地址</TableHead><TableHead>状态</TableHead></TableRow></TableHeader><TableBody>{instances.data?.map(i => <TableRow key={i.id}><TableCell>{i.name}</TableCell><TableCell>{i.organization}</TableCell><TableCell className="break-all">{i.endpoint}</TableCell><TableCell>{i.enabled ? '启用' : '停用'}</TableCell></TableRow>)}</TableBody></Table></section>}
-    {id && !settingsOnly && <Tabs value={tab} onValueChange={setTab}><TabsList className="flex h-auto flex-wrap justify-start"><TabsTrigger value="logs">同步记录</TabsTrigger><TabsTrigger value="masters">供应商与厂家</TabsTrigger><TabsTrigger value="orders">上传采购订单</TabsTrigger><TabsTrigger value="report">采购订购报表</TabsTrigger><TabsTrigger value="phase2">履约与库存</TabsTrigger></TabsList>
+    {id && !settingsOnly && <Tabs value={tab} onValueChange={setTab}><TabsList className="flex h-auto flex-wrap justify-start"><TabsTrigger value="logs">同步记录</TabsTrigger><TabsTrigger value="masters">供应商与厂家</TabsTrigger><TabsTrigger value="orders">上传采购订单</TabsTrigger><TabsTrigger value="report">采购订购报表</TabsTrigger><TabsTrigger value="phase2">履约与库存</TabsTrigger>{permissions.includes('integration:phase3:read') && <TabsTrigger value="phase3">医院计划与结算</TabsTrigger>}</TabsList>
+      <TabsContent value="phase3"><Phase3Management instanceId={id} permissions={permissions} /></TabsContent>
       <TabsContent value="phase2"><Phase2Management instanceId={id} /></TabsContent>
       <TabsContent value="logs" className="space-y-4 rounded-lg border bg-background p-4"><div className="flex flex-wrap gap-3"><Select value={stateFilter} onValueChange={setStateFilter}><SelectTrigger className="w-48" aria-label="同步状态"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部状态</SelectItem>{Object.entries(syncStates).map(([k, v]) => <SelectItem key={k} value={k}>{v}</SelectItem>)}</SelectContent></Select><Select value={kindFilter} onValueChange={setKindFilter}><SelectTrigger className="w-48" aria-label="同步对象"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部对象</SelectItem>{Object.entries(kinds).map(([k, v]) => <SelectItem key={k} value={k}>{v}</SelectItem>)}</SelectContent></Select></div><p className="text-xs text-muted-foreground">显示最近 500 条记录。失败订单保留在此处，补齐关联后可重试；“接口已接收”需要等待 SPD-PR 处理回执。</p><Table><TableHeader><TableRow>{['时间', '方向', '对象', '业务编号', '批次', '状态', '结果', '操作'].map(h => <TableHead key={h}>{h}</TableHead>)}</TableRow></TableHeader><TableBody>{logs.data?.filter(l => (stateFilter === 'all' || l.state === stateFilter) && (kindFilter === 'all' || l.kind === kindFilter)).map(l => <TableRow key={l.id}><TableCell className="whitespace-nowrap">{l.createdTime}</TableCell><TableCell>{l.direction === 'upload' ? '上传' : '下发'}</TableCell><TableCell>{kinds[l.kind]}</TableCell><TableCell>{l.sourceCode}</TableCell><TableCell title={l.batchId}>{l.batchId.slice(0, 8)}</TableCell><TableCell><Badge variant={l.state === 'failed' ? 'destructive' : l.state === 'processed' ? 'default' : 'secondary'}>{syncStates[l.state]}</Badge></TableCell><TableCell className="min-w-56 break-words">{l.message}</TableCell><TableCell>{canManage && <Button size="sm" variant="outline" disabled={l.state !== 'failed' || retry.isPending} onClick={() => retry.mutate(l.id)}>重试</Button>}</TableCell></TableRow>)}</TableBody></Table>{logs.data?.length === 0 && <p className="text-muted-foreground">暂无同步记录</p>}</TabsContent>
       <TabsContent value="masters" className="space-y-6 rounded-lg border bg-background p-4"><p className="text-sm text-muted-foreground">以下资料由 SPD-PR 维护，按实例隔离，仅供查询及业务关联。</p>{masterTable('供应商', suppliers.data)}{masterTable('厂家', manufacturers.data)}</TabsContent>
@@ -86,4 +88,8 @@ export default function IntegrationManagement({ permissions, settingsOnly = fals
     </Dialog>
     <Dialog open={!!detail} onOpenChange={open => { if (!open) setDetail(null); }}><DialogContent className="max-w-5xl"><DialogHeader><DialogTitle>采购订单 {detail?.orderNo}</DialogTitle><DialogDescription>来源 SPD-PR · 更新时间 {detail?.sourceUpdatedAt}</DialogDescription></DialogHeader><Table><TableHeader><TableRow>{['明细编号', '商品编码', '数量', '单位', '单价', '金额'].map(h => <TableHead key={h}>{h}</TableHead>)}</TableRow></TableHeader><TableBody>{detail?.items.map(i => <TableRow key={i.lineId}><TableCell>{i.lineId}</TableCell><TableCell>{i.productCode}</TableCell><TableCell className="text-right">{formatNumber(i.quantity)}</TableCell><TableCell>{i.unit}</TableCell><TableCell className="text-right">{formatNumber(i.unitPrice)}</TableCell><TableCell className="text-right">{formatNumber(i.amount)}</TableCell></TableRow>)}</TableBody></Table></DialogContent></Dialog>
   </div>;
+}
+
+export default function IntegrationManagement(props: { permissions: string[]; settingsOnly?: boolean }) {
+  return props.permissions.includes('integration:read') ? <LegacyIntegrationManagement {...props} /> : <Phase3Management permissions={props.permissions} />;
 }

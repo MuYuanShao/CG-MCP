@@ -64,7 +64,7 @@ public class PurchaseRepository {
 
   public Optional<Integer> findPlanStatusByNo(long tenantId, String planNo) {
     return jdbcTemplate.queryForList(
-        "SELECT status FROM biz_purchase_plan WHERE tenant_id = ? AND plan_no = ? AND deleted = 0",
+        "SELECT status FROM biz_purchase_plan WHERE tenant_id = ? AND plan_no = ? AND deleted = 0 FOR UPDATE",
         Integer.class,
         tenantId,
         planNo).stream().findFirst();
