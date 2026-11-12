@@ -20,7 +20,7 @@ try:
     exec(setup, d.__dict__)
     d.main()
     env = os.environ.copy()
-    env.update({"VITE_DEV_API_PROXY_TARGET": "http://127.0.0.1:18080", "VITE_API_KEY": d.SECRET})
+    env.update({"VITE_API_BASE_URL": "/api", "VITE_DEV_API_PROXY_TARGET": d.MCP_URL.removesuffix("/api"), "APP_API_KEY": d.SECRET})
     d.launch(["node", "node_modules/vite/bin/vite.js", "--host", "127.0.0.1", "--port", "5175"], "mcp-frontend.log", env)
     config = d.RUN / "spd-vite.config.mjs"
     config.write_text("import vue from 'file:///D:/SPD-PR/node_modules/@vitejs/plugin-vue/dist/index.mjs';\nexport default {root:'D:/SPD-PR/frontend',plugins:[vue()],server:{host:'127.0.0.1',port:1825,strictPort:true,proxy:{'/api':{target:'http://127.0.0.1:11818',changeOrigin:true}}}};", encoding="utf-8")

@@ -43,6 +43,27 @@ export type BusinessDocument = {
   status: string;
   canApprove?: boolean;
   canEdit?: boolean;
+  planFields?: {
+    productCode?: string;
+    spec?: string;
+    model?: string;
+    unit?: string;
+    unitPrice?: number;
+    registrationNo?: string;
+    zcLocalCode?: string;
+    manufacturer?: string;
+    sourceStatus?: string | null;
+    supplierCode?: string;
+    currency?: string;
+    taxIncluded?: boolean;
+    instanceId?: string;
+    sourceLineId?: string;
+    supplierName?: string;
+    receivingAddress?: string;
+    quantityExact?: string;
+    amountExact?: string;
+    unitPriceExact?: string;
+  };
 };
 
 export type PurchaseOrderSearchParams = {

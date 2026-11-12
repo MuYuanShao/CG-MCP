@@ -80,11 +80,19 @@ def request(base, path, method="GET", body=None, token=None, spd_token=None, ten
         headers["Idempotency-Key"] = idempotency_key
     data = raw if raw is not None else (None if body is None else json.dumps(body, ensure_ascii=False).encode())
     req = urllib.request.Request(base + path, data=data, headers=headers, method=method)
+    def decode(response):
+        payload = response.read()
+        try:
+            return json.loads(payload)
+        except json.JSONDecodeError as error:
+            raise RuntimeError(
+                f"{method} {path}: HTTP {response.status}, non-JSON response ({len(payload)} bytes)"
+            ) from error
     try:
         with (opener or urllib.request.build_opener()).open(req, timeout=40) as response:
-            return response.status, json.loads(response.read())
+            return response.status, decode(response)
     except urllib.error.HTTPError as error:
-        return error.code, json.loads(error.read())
+        return error.code, decode(error)
 
 
 def api(base, path, method="GET", body=None, token=None, **kwargs):
@@ -208,9 +216,12 @@ def main():
     env = os.environ.copy()
     env.update({"SERVER_PORT": str(MCP_PORT), "SPRING_PROFILES_ACTIVE": "test", "SPRING_DATASOURCE_URL": f"jdbc:mysql://127.0.0.1:{MYSQL_PORT}/mcp_it?serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false",
                 "SPRING_DATASOURCE_USERNAME": "root", "SPRING_DATASOURCE_PASSWORD": DB_PASSWORD,
-                "APP_PHASE3_ENABLED": "true", "APP_API_KEY": SECRET, "APP_AUTH_TOKEN_SECRET": SECRET, "APP_ADMIN_USERNAME": "e2e_admin", "APP_ADMIN_PASSWORD": PASSWORD,
+                "APP_PHASE3_ENABLED": "true", "APP_PHASE3_SUPPLY_ENABLED": "true", "APP_API_KEY": SECRET, "APP_AUTH_TOKEN_SECRET": SECRET, "APP_ADMIN_USERNAME": "e2e_admin", "APP_ADMIN_PASSWORD": PASSWORD,
                 "SPD_PR_MAIN_TOKEN": SECRET, "APP_UPLOAD_ROOT_DIR": str(RUN / "mcp-uploads"), "APP_LICENSE_UPLOAD_DIR": str(RUN / "mcp-uploads/licenses")})
-    launch(["java", "-jar", str(ROOT / "server/target/spd-mcp-api.jar"), "--server.address=127.0.0.1"], "mcp-backend.log", env)
+    mcp_jar = Path(os.environ.get("MCP_TEST_JAR", str(ROOT / "server/target/spd-mcp-api.jar")))
+    mcp_args = ["java", "-jar", str(mcp_jar), "--server.address=127.0.0.1"]
+    mcp_env = env.copy()
+    mcp_process = launch(mcp_args, "mcp-backend.log", mcp_env)
     wait("MCP-UI真实迁移及启动", lambda: health(MCP_URL), 100)
     mcp = api(MCP_URL, "/auth/login", "POST", {"username": "e2e_admin", "password": PASSWORD})["token"]
     check_category_api(mcp)
@@ -254,7 +265,7 @@ def main():
         check(converted[0] == 200 and edited[0] == 400 and edited[1].get("code") == "PLAN_STATUS_CHANGED", "转单先提交后，并发编辑被原子状态条件拒绝")
     locker.stdin.close()
     locker.wait(timeout=10)
-    check(sql("SELECT plan_qty,unit_price FROM biz_purchase_plan WHERE id=900011;", "mcp_it").split("\t") == ["10", "2.0000"], "并发编辑未改写已转单数量及单价")
+    check(sql("SELECT CAST(plan_qty AS SIGNED),unit_price FROM biz_purchase_plan WHERE id=900011;", "mcp_it").split("\t") == ["10", "2.0000"], "并发编辑未改写已转单数量及单价")
     check_concurrent_plan_conversion(mcp, due)
     cfg = {"name": "隔离联调医院", "organization": "E2E_HOSPITAL", "endpoint": SPD_URL + "/mcp/receive", "tokenEnv": "SPD_PR_MAIN_TOKEN", "enabled": True}
     INSTANCE = api(MCP_URL, "/integration/instances", "POST", cfg, mcp)["id"]
@@ -262,11 +273,12 @@ def main():
     env = os.environ.copy()
     env.update({"SERVER_PORT": str(SPD_PORT), "SPRING_PROFILES_ACTIVE": "test", "SPD_DB_URL": f"jdbc:mysql://127.0.0.1:{MYSQL_PORT}/spd_it?serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false",
                 "SPD_DB_USERNAME": "root", "SPD_DB_PASSWORD": DB_PASSWORD, "SPD_JWT_SECRET": SECRET,
-                "SPD_MCP_ENABLED": "true", "SPD_MCP_UPLOAD_ENABLED": "true", "SPD_MCP_ORGANIZATION": "E2E_HOSPITAL", "SPD_MCP_SHARED_TOKEN": SECRET,
+                "SPD_MCP_ENABLED": "true", "SPD_MCP_UPLOAD_ENABLED": "true", "SPD_MCP_SUPPLY_ENABLED": "true", "SPD_MCP_ORGANIZATION": "E2E_HOSPITAL", "SPD_MCP_SHARED_TOKEN": SECRET,
                 "SPD_MCP_OPERATOR_ID": "900001", "SPD_MCP_UI_URL": "http://127.0.0.1:1/api", "SPD_MCP_UI_INSTANCE_ID": INSTANCE, "SPD_MCP_UI_TENANT_ID": "1",
                 "SPD_MCP_UI_USERNAME": "e2e_admin", "SPD_MCP_UI_PASSWORD": PASSWORD, "SPD_MCP_UI_API_KEY": SECRET,
                 "SPD_MCP_CURRENCY": "CNY", "SPD_MCP_TAX_INCLUDED": "true", "SPD_MCP_SOURCE_ZONE": "Asia/Shanghai", "SPD_MCP_PHASE2_UPLOAD_ENABLED": "true", "SPD_UPLOAD_DIR": str(RUN / "spd-uploads")})
-    jars = list((SPD / "backend/target").glob("*.jar"))
+    spd_jar = os.environ.get("SPD_TEST_JAR")
+    jars = [Path(spd_jar)] if spd_jar else list((SPD / "backend/target").glob("*.jar"))
     check(bool(jars), "SPD-PR联调jar可用")
     launch(["java", "-jar", str(jars[0]), f"--server.port={SPD_PORT}", "--server.address=127.0.0.1", "--spd.mcp.upload-delay-ms=2000", "--logging.level.com.hospital.spd.integration.McpUploadJob=WARN"], "spd-backend.log", env, SPD)
     wait("SPD-PR真实迁移及启动", lambda: health(SPD_URL), 150)
@@ -274,7 +286,7 @@ def main():
     admin_id = int(sql("SELECT user_id FROM sys_user WHERE username='admin';", "spd_it"))
     sql(f"UPDATE sys_user SET password='{encrypted}',status=1,login_fail_count=0,lock_time=NULL WHERE user_id={admin_id}; INSERT INTO sys_user(user_id,username,password,real_name,status,dept_id) SELECT 900001,'e2e_receiver','{encrypted}','联调接收账户',1,dept_id FROM sys_user WHERE user_id={admin_id}; INSERT INTO sys_user_role(user_id,role_id) SELECT 900001,role_id FROM sys_user_role WHERE user_id={admin_id};", "spd_it")
     spd = api(SPD_URL, "/auth/login", "POST", {"username": "admin", "password": PASSWORD})["token"]
-    connection = {"configType": "integration", "scopeType": "global", "scopeId": "default", "configKey": "integration.mcp-ui.connection", "configValue": json.dumps({"protocol": "http", "host": "127.0.0.1", "port": MCP_PORT, "phase2Enabled": True, "phase3Enabled": True}), "effectiveMode": "realtime", "expireTime": "", "riskLevel": "low", "status": 1}
+    connection = {"configType": "integration", "scopeType": "global", "scopeId": "default", "configKey": "integration.mcp-ui.connection", "configValue": json.dumps({"protocol": "http", "host": "127.0.0.1", "port": MCP_PORT, "phase2Enabled": True, "phase3Enabled": True}, separators=(",", ":")), "effectiveMode": "realtime", "expireTime": "", "riskLevel": "low", "status": 1}
     api(SPD_URL, "/system-config", "POST", connection, spd)
     emit("通过系统设置API保存IP端口，覆盖故意错误的旧环境地址")
     source_company = sql("SELECT manufacturer_name FROM manufacturer WHERE status=1 AND deleted=0 LIMIT 1;", "spd_it")
@@ -337,11 +349,127 @@ def main():
     for action in ("submit", "approve", "send"):
         api(SPD_URL, f"/purchase-orders/{order}/action", "PUT", {"action": action, "opinion": "隔离双端联调"}, spd)
     wait("采购订单由SPD-PR真实任务上传", lambda: find_record(mcp, "order", order))
+    imported = next(p for p in api(MCP_URL, "/purchase-plans", token=mcp) if p["sourceNo"] == order)
+    check(imported["quantity"] == 10 and imported["amount"] == 20
+          and imported["planFields"]["productCode"] == code and imported["planFields"]["unit"] == "支"
+          and imported["planFields"]["unitPrice"] == 2 and not imported["canEdit"] and not imported["canApprove"],
+          "真实上传订单明细展示在采购计划且保持只读")
+    convert_status, _ = request(MCP_URL, f"/purchase-plans/{imported['documentNo']}/delivery-edit", "POST", token=mcp)
+    check(convert_status == 400, "导入采购计划拒绝重复转单")
+    read_only_user = api(MCP_URL, "/auth/login", "POST", {"username": "e2e_viewer", "password": PASSWORD})["token"]
+    check(all(not p["sourceNo"] for p in api(MCP_URL, "/purchase-plans", token=read_only_user)),
+          "无对接查询权限的账号看不到SPD-PR导入计划")
+    fixture = find_record(mcp, "order", order)
+    version = dt.datetime.now(dt.timezone.utc)
+    def projected_version(offset):
+        return (version + dt.timedelta(seconds=offset)).isoformat().replace("+00:00", "Z")
+    source_line = fixture["items"][0]
+    new_line = dict(source_line, lineId="fixture-second", quantity=1.25, unitPrice=2.5, amount=3.125)
+    projected_order = dict(fixture, orderNo="IT_PROJECT_" + key, sourceUpdatedAt=projected_version(1),
+                           items=[source_line, new_line], totalAmount=23.125)
+    endpoint = f"/integration/instances/{INSTANCE}/orders"
+    check(api(MCP_URL, endpoint, "POST", projected_order, mcp, spd_token=SECRET)["state"] == "processed",
+          "多明细采购订单进入采购计划")
+    projected = [p for p in api(MCP_URL, "/purchase-plans", token=mcp) if p["sourceNo"] == projected_order["orderNo"]]
+    fractional = next(p for p in projected if p["quantity"] == 1.25)
+    check(len(projected) == 2 and fractional["amount"] == 3.125 and fractional["planFields"]["unitPrice"] == 2.5,
+          "导入计划保留小数数量、单价和来源金额")
+    check(api(MCP_URL, endpoint, "POST", projected_order, mcp, spd_token=SECRET)["state"] == "ignored",
+          "同版本订单重复上传不会重复生成计划")
+    cancelled = dict(projected_order, status="cancelled", sourceUpdatedAt=projected_version(2), items=[new_line], totalAmount=3.125)
+    check(api(MCP_URL, endpoint, "POST", cancelled, mcp, spd_token=SECRET)["state"] == "processed",
+          "订单更新与取消同步到采购计划")
+    api(MCP_URL, endpoint, "POST", projected_order, mcp, spd_token=SECRET)
+    projected = [p for p in api(MCP_URL, "/purchase-plans", token=mcp) if p["sourceNo"] == projected_order["orderNo"]]
+    check(len(projected) == 1 and projected[0]["id"] == fractional["id"]
+          and projected[0]["planFields"]["sourceStatus"] == "cancelled",
+          "取消保留原记录、删除旧明细且旧版本不能复活")
+    audit_endpoint = f"/integration/instances/{INSTANCE}/order-receive-logs"
+    invalid_order = dict(fixture, orderNo="IT_LOG_" + key, items=[dict(source_line, productCode="UNMAPPED_LOG_ITEM")])
+    failed_log = api(MCP_URL, endpoint, "POST", invalid_order, mcp, spd_token=SECRET)
+    check(failed_log["state"] == "failed", "订单业务接收失败有原始日志")
+    retry = api(MCP_URL, f"/integration/logs/{failed_log['id']}/retry", "POST", token=mcp)
+    check(retry["state"] == "failed", "失败订单可重试并保留失败历史")
+    logs = api(MCP_URL, audit_endpoint + f"?orderNo={invalid_order['orderNo']}&page=1&size=1", token=mcp)
+    check(logs["total"] == 2 and len(logs["records"]) == 1, "设置页接口日志支持订单号查询与分页")
+    detail = api(MCP_URL, audit_endpoint + "/" + failed_log["id"], token=mcp)
+    check(detail["log"]["state"] == "retried" and "商品未匹配" in detail["log"]["reason"]
+          and detail["parameters"]["items"][0]["productCode"] == "UNMAPPED_LOG_ITEM", "重试后保留原失败原因及订单参数")
+    malformed = dict(fixture, orderNo="IT_FIELDS_" + key, orderDate="not-a-date",
+                     authorization="must-not-be-stored", items=[dict(source_line, password="must-not-be-stored")])
+    status, response = request(MCP_URL, endpoint, "POST", malformed, mcp, spd_token=SECRET)
+    check(status == 400 and response["code"] == "ORDER_FIELDS_INVALID", "字段解析错误进入接口失败流程")
+    field_logs = api(MCP_URL, audit_endpoint + f"?orderNo={malformed['orderNo']}", token=mcp)
+    field_detail = api(MCP_URL, audit_endpoint + "/" + field_logs["records"][0]["id"], token=mcp)
+    check(field_detail["log"]["httpStatus"] == 400 and field_detail["parameters"]["orderDate"] == "not-a-date"
+          and "must-not-be-stored" not in json.dumps(field_detail), "失败详情保留业务字段并剔除未知敏感字段")
+    status, response = request(MCP_URL, endpoint, "POST", token=mcp, spd_token=SECRET, raw=b'{"items":[')
+    check(status == 400 and response["code"] == "ORDER_JSON_INVALID", "非法JSON明确拒绝")
+    status, response = request(MCP_URL, endpoint, "POST", fixture, mcp, spd_token="wrong-instance-key")
+    check(status == 401 and response["code"] == "SPD_TOKEN_INVALID", "实例鉴权错误明确拒绝")
+    auth_logs = api(MCP_URL, audit_endpoint + f"?orderNo={fixture['orderNo']}", token=mcp)["records"]
+    auth_log = next(entry for entry in auth_logs if entry.get("failureCode") == "SPD_TOKEN_INVALID")
+    auth_detail = api(MCP_URL, audit_endpoint + "/" + auth_log["id"], token=mcp)
+    check(auth_detail["parameters"]["items"][0]["productCode"] == code
+          and "wrong-instance-key" not in json.dumps(auth_detail), "鉴权失败保留订单业务参数且不泄露令牌")
+    status, response = request(MCP_URL, endpoint, "POST", token=mcp, spd_token="wrong-instance-key", raw=b'{"items":[')
+    check(status == 401 and response["code"] == "SPD_TOKEN_INVALID", "无法提取请求参数时仍保留原鉴权响应")
+    request_logs = api(MCP_URL, audit_endpoint, token=mcp)["records"]
+    check({"ORDER_JSON_INVALID", "SPD_TOKEN_INVALID"}.issubset({entry.get("failureCode") for entry in request_logs}),
+          "非法JSON及实例鉴权失败均可在接口日志查询")
+    status, _ = request(MCP_URL, audit_endpoint + "/" + failed_log["id"], token=read_only_user)
+    check(status == 403, "无对接权限账号不能查看订单请求参数")
+    exact = "12345678901234.1234"
+    exact_order = dict(fixture, orderNo="IT_EXACT_" + key, status="cancelled", totalAmount="EXACT_DECIMAL",
+                       items=[dict(source_line, quantity=1, unitPrice="EXACT_DECIMAL", amount="EXACT_DECIMAL")])
+    def exact_body(payload):
+        return json.dumps(payload).replace('"EXACT_DECIMAL"', exact).encode()
+    exact_result = api(MCP_URL, endpoint, "POST", token=mcp, spd_token=SECRET, raw=exact_body(exact_order))
+    exact_plan = sql(f"SELECT unit_price,spd_amount FROM biz_purchase_plan WHERE spd_order_no='{exact_order['orderNo']}';", "mcp_it")
+    exact_snapshot = sql(f"SELECT payload_exact FROM spd_record WHERE kind='order' AND source_code='{exact_order['orderNo']}';", "mcp_it")
+    check(exact_result["state"] == "processed" and exact_plan.split("\t") == [exact, exact]
+          and json.loads(exact_snapshot, parse_float=Decimal)["totalAmount"] == Decimal(exact),
+          "高精度订单金额和单价完整写入计划及原始快照")
+    exact_invalid = dict(exact_order, orderNo="IT_EXACT_LOG_" + key, orderDate="not-a-date")
+    status, _ = request(MCP_URL, endpoint, "POST", token=mcp, spd_token=SECRET, raw=exact_body(exact_invalid))
+    exact_logs = api(MCP_URL, audit_endpoint + f"?orderNo={exact_invalid['orderNo']}", token=mcp)["records"]
+    exact_detail = api(MCP_URL, audit_endpoint + "/" + exact_logs[0]["id"], token=mcp)
+    check(status == 400 and json.loads(exact_detail["parametersJson"], parse_float=Decimal)["items"][0]["amount"] == Decimal(exact),
+          "失败详情文本保留高精度原金额")
+    conflict_order = dict(fixture, orderNo="IT_KEY_CONFLICT_" + key, totalAmount=40,
+                          items=[dict(source_line, lineId="fixture-line"), dict(source_line, lineId="fixture-line ")])
+    status, response = request(MCP_URL, endpoint, "POST", conflict_order, mcp, spd_token=SECRET)
+    conflict_logs = api(MCP_URL, audit_endpoint + f"?orderNo={conflict_order['orderNo']}", token=mcp)["records"]
+    check(status == 400 and response["code"] == "DUPLICATE_KEY" and conflict_logs[0]["httpStatus"] == status
+          and conflict_logs[0]["failureCode"] == response["code"] and not find_record(mcp, "order", conflict_order["orderNo"]),
+          "唯一约束失败事务回滚，接口响应与日志错误码一致")
     warehouse = sql("SELECT warehouse_code,warehouse_name FROM warehouse WHERE status=1 AND deleted=0 AND receiving_enabled=1 LIMIT 1;", "spd_it").split("\t")
     product_id = sql(f"SELECT product_id FROM product WHERE product_code='{code}';", "spd_it")
     warehouse_id = sql(f"SELECT warehouse_id FROM warehouse WHERE warehouse_code='{warehouse[0]}';", "spd_it")
     sql(f"INSERT IGNORE INTO warehouse_product_binding(warehouse_id,product_id,status,deleted) VALUES({warehouse_id},{product_id},1,0);", "spd_it")
     line_id = int(sql(f"SELECT i.item_id FROM purchase_order_item i JOIN purchase_order p ON p.purchase_order_id=i.purchase_order_id WHERE p.order_no='{order}';", "spd_it"))
+    supply_base = f"/integration/instances/{INSTANCE}/phase3"
+    supply_order = f"{supply_base}/purchase-orders/{order}"
+    draft_path = supply_order + "/supply-draft"
+    status, _ = request(MCP_URL, draft_path, "POST", token=mcp)
+    check(status == 404, "未绑定供应商不能为来源订单生成草稿")
+    api(MCP_URL, supply_base + "/supplier-access", "POST", {"username": "e2e_admin", "supplierCode": supplier[0]}, mcp)
+    draft = api(MCP_URL, draft_path, "POST", token=mcp)
+    reopened = api(MCP_URL, draft_path, "POST", token=mcp)
+    check(draft["draftId"] == reopened["draftId"] and draft["orderNo"] == order, "重复确认打开同一供货草稿")
+    options = api(MCP_URL, supply_order + "/supply-options", token=mcp)
+    check(any(w["code"] == warehouse[0] for w in options["warehouses"]), "供货草稿读取真实院内收货库房")
+    draft_line = {"orderLineId": str(line_id), "productCode": code, "unit": "支", "quantity": "1", "productionDate": str(TODAY - dt.timedelta(days=2)), "expireDate": str(TODAY + dt.timedelta(days=365)), "udiCode": ""}
+    draft_body = dict(draft["body"], warehouseCode=warehouse[0],
+                      items=[dict(draft_line, supplyLineId=f"batch-{i}", productionBatchNo=f"SUPPLY-{key}-{i}") for i in (1, 2)])
+    saved = api(MCP_URL, draft_path + "/" + draft["draftId"], "PUT", draft_body, mcp)
+    check(saved["body"] == draft_body and any(d["draftId"] == draft["draftId"] for d in api(MCP_URL, "/integration/phase3/supply-drafts", token=mcp)),
+          "供货草稿保存并可在采购订单页恢复")
+    submitted = api(MCP_URL, supply_order + "/supplies", "POST", saved["body"], mcp, idempotency_key=draft["draftId"])
+    check(submitted["messageId"] == draft["draftId"] and not api(MCP_URL, "/integration/phase3/supply-drafts", token=mcp),
+          "提交后移除草稿并保留同一幂等身份")
+    wait("多批次供货单由SPD-PR真实接收", lambda: any(r["messageId"] == draft["draftId"] and r["state"] == "processed"
+         for r in api(MCP_URL, "/integration/phase3/supply-orders", token=mcp)["rows"]))
     receipt = api(SPD_URL, "/receiving-orders", "POST", {"sourceType": "purchase_order", "purchaseOrderNo": order, "supplierName": supplier[1], "warehouseCode": warehouse[0], "warehouseName": warehouse[1], "receivingType": "normal", "items": [{"purchaseOrderItemId": line_id, "productCode": code, "productionBatchNo": "LOT_" + key, "productionDate": str(TODAY - dt.timedelta(days=20)), "expireDate": str(TODAY + dt.timedelta(days=365)), "quantity": 8, "qualifiedQuantity": 6, "unqualifiedQuantity": 2}]}, spd)["receivingNo"]
     api(SPD_URL, f"/receiving-orders/{receipt}/action", "PUT", {"action": "approve", "opinion": "隔离双端联调"}, spd)
     received = wait("收货验收由SPD-PR真实任务上传", lambda: find_record(mcp, "receiving", receipt))
@@ -385,7 +513,7 @@ def main():
     check(status == 401, "跨租户请求被拒绝")
     settings = api(SPD_URL, "/system-config?configType=integration&keyword=integration.mcp-ui.connection", token=spd)
     connection_id = next(c["configId"] for c in settings if c["configKey"] == "integration.mcp-ui.connection")
-    connection["configValue"] = json.dumps({"protocol": "http", "host": "127.0.0.1", "port": MCP_PORT, "phase2Enabled": False})
+    connection["configValue"] = json.dumps({"protocol": "http", "host": "127.0.0.1", "port": MCP_PORT, "phase2Enabled": False}, separators=(",", ":"))
     api(SPD_URL, f"/system-config/{connection_id}", "PUT", connection, spd)
     previous_stock = find_record(mcp, "inventory", "current")
     empty_stock = dict(previous_stock, items=[], sourceUpdatedAt=(dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=30)).isoformat().replace("+00:00", "Z"))
@@ -489,8 +617,15 @@ def main():
     check(int(sql("SELECT MAX(CAST(version AS UNSIGNED)) FROM flyway_schema_history WHERE success=1;", "spd_it")) == expected_spd, "SPD-PR迁移执行到当前源码版本")
     expected_mcp = max(int(p.name.split("__",1)[0][1:]) for p in (ROOT / "server/src/main/resources/db/migration").glob("V*__*.sql"))
     check(int(sql("SELECT MAX(CAST(version AS UNSIGNED)) FROM flyway_schema_history WHERE success=1;", "mcp_it")) == expected_mcp, "MCP-UI迁移执行到当前版本")
-    from phase3_acceptance import check_phase3
-    check_phase3(sys.modules[__name__], mcp, spd, supplier, source_company)
+    if os.environ.get("SPD_TEST_SKIP_PHASE3") != "1":
+        from phase3_acceptance import check_phase3
+        check_phase3(sys.modules[__name__], mcp, spd, supplier, source_company)
+    mcp_process.terminate()
+    mcp_process.wait(timeout=15)
+    sql(f"DELETE FROM biz_purchase_plan WHERE spd_instance_id='{INSTANCE}' AND spd_order_no='{projected_order['orderNo']}';", "mcp_it")
+    launch(mcp_args, "mcp-backend-restarted.log", mcp_env)
+    wait("MCP-UI重启后回填历史订单计划", lambda: sql(
+        f"SELECT COUNT(*) FROM biz_purchase_plan WHERE spd_instance_id='{INSTANCE}' AND spd_order_no='{projected_order['orderNo']}' AND deleted=0 AND spd_order_status='cancelled';", "mcp_it") == "1")
 
 
 if __name__ == "__main__":

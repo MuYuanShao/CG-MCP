@@ -121,7 +121,7 @@ export default function AppLayout({ authUser, onLogout }: AppLayoutProps) {
       case 'products': return <ProductManagement canDispatch={authUser.permissions.includes('integration:manage')} />;
       case 'integration': return <IntegrationManagement permissions={authUser.permissions} />;
       case 'settings': return <IntegrationManagement permissions={authUser.permissions} settingsOnly />;
-      case 'orders': return <PurchaseManagement isAdministrator={isAdministrator} />;
+      case 'orders': return <PurchaseManagement isAdministrator={isAdministrator} permissions={authUser.permissions} />;
       case 'licenses': return <LicenseManagement />;
       case 'categories': return <CategoryManagement canManage={authUser.permissions.includes('categories:manage')} />;
       case 'acceptance': return <AcceptanceManagement />;

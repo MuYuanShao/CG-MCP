@@ -24,11 +24,12 @@ class IntegrationServiceTest {
   @Mock JdbcTemplate db;
   @Mock SpdTransport transport;
   @Mock PlatformTransactionManager transactionManager;
+  @Mock SpdOrderPlanService orderPlans;
   final ObjectMapper mapper=new ObjectMapper().findAndRegisterModules();
   final Instant now=Instant.parse("2026-10-08T00:00:00Z");
   IntegrationService service;
   final Instance instance=new Instance("one","测试医院","H001","http://localhost:1818/api/mcp/receive","SPD_PR_TEST_TOKEN",true);
-  @BeforeEach void setup() {service=new IntegrationService(repo,new TenantContext(7),products,db,mapper,transport,"uploads/licenses",transactionManager,mock(Phase2Service.class));}
+  @BeforeEach void setup() {service=new IntegrationService(repo,new TenantContext(7),products,db,mapper,transport,"uploads/licenses",transactionManager,mock(Phase2Service.class),orderPlans);}
   OrderItem line(String id,String product,String unit,String quantity,String amount) {return new OrderItem(id,product,new BigDecimal(quantity),unit,new BigDecimal("2"),new BigDecimal(amount));}
   OrderRequest order(String state,Instant timestamp,List<OrderItem> items,String total) {return new OrderRequest("PO1","S1",LocalDate.of(2026,10,8),state,new BigDecimal(total),"CNY",true,timestamp,items);}
   @Test void uploadsMasterWithinTenantAndInstance() {
@@ -74,10 +75,12 @@ class IntegrationServiceTest {
     when(repo.mappedProduct(7,"one","P1")).thenReturn(Optional.of(12L));
     var product=mapper.convertValue(Map.of("id",12,"unit","支"),com.spd.mcp.api.product.ProductDto.class);
     when(products.findById(7,12)).thenReturn(Optional.of(product));
-    var original=order("submitted",now,List.of(line("L1","P1","支","1","2")),"2");
+    var original=order("submitted",now,List.of(line("L1","P1","支","1","2"),line("L2","P1","支","1","2")),"4");
     service.uploadOrder("one",original);
     verify(repo).saveRecord(7,"one","order","PO1",now.toString(),original);
-    var cancelled=order("cancelled",now.plusSeconds(1),original.items(),"2");
+    verify(repo).mappedProduct(7,"one","P1");
+    verify(orderPlans).sync(7,"one",original,Map.of("P1",12L));
+    var cancelled=order("cancelled",now.plusSeconds(1),original.items(),"4");
     service.uploadOrder("one",cancelled);
     verify(repo).saveRecord(7,"one","order","PO1",now.plusSeconds(1).toString(),cancelled);
   }

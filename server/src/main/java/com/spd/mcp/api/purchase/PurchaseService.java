@@ -25,9 +25,9 @@ public class PurchaseService {
     this.approvalAccessService = approvalAccessService;
   }
 
-  public List<BusinessDocumentDto> plans() {
+  public List<BusinessDocumentDto> plans(boolean includeSpdOrders, String supplierUser) {
     boolean canOperate = approvalAccessService.canOperate(ApprovalAccessService.PURCHASE_PLAN_WORKFLOW);
-    return purchaseRepository.plans(tenantContext.currentTenantId()).stream()
+    return purchaseRepository.plans(tenantContext.currentTenantId(), includeSpdOrders, supplierUser).stream()
         .map(plan -> plan.withCapabilities(
             canOperate && "pending_approval".equals(plan.status()),
             switch (plan.status()) {

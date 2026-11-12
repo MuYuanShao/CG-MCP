@@ -24,6 +24,29 @@ function fixtures() {
   vi.mocked(api.listSyncLogs).mockResolvedValue([{ id: 'failed-order', batchId: 'batch-1', instanceId: 'hospital-one', direction: 'upload', kind: 'order', sourceCode: 'PO1', state: 'failed', message: '商品未匹配: P1', createdTime: '2026-10-08 09:00:00' }]);
 }
 describe('采购对接', () => {
+  it('finds order intake failures from system settings and shows request parameters on demand', async () => {
+    fixtures();
+    const log = { id: 'failed-order', orderNo: 'PO1', state: 'failed', reason: '商品未匹配: P1',
+      httpStatus: 200, createdTime: '2026-11-11 10:00:00' };
+    vi.mocked(requestJson).mockResolvedValueOnce({ data: { records: [log], total: 1, current: 1, size: 20 } })
+      .mockResolvedValueOnce({ data: { records: [log], total: 1, current: 1, size: 20 } })
+      .mockResolvedValueOnce({ data: {
+        log,
+        parameters: { orderNo: 'PO1', items: [{ productCode: 'P1', quantity: 2 }] },
+        parametersJson: '{"orderNo": "PO1", "items": [{"productCode": "P1", "quantity": 2, "amount": 12345678901234.1234}]}',
+      } });
+    mount(<IntegrationManagement permissions={['integration:read']} settingsOnly />);
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '接口日志' }), { button: 0, ctrlKey: false });
+    await screen.findByRole('heading', { name: '接收采购计划接口' });
+    await screen.findByText('商品未匹配: P1');
+    fireEvent.change(screen.getByLabelText('订单号'), { target: { value: 'PO1' } });
+    fireEvent.click(screen.getByRole('button', { name: '查询' }));
+    await waitFor(() => expect(requestJson).toHaveBeenCalledWith('/integration/instances/hospital-one/order-receive-logs?orderNo=PO1&page=1'));
+    fireEvent.click(await screen.findByRole('button', { name: '查看参数' }));
+    await screen.findByRole('heading', { name: '接收采购计划失败详情' });
+    expect(await screen.findByText(/"productCode": "P1"/)).toBeTruthy();
+    expect(screen.getByText(/12345678901234\.1234/)).toBeTruthy();
+  });
   it('opens system settings and saves an IP and port as the SPD receiver address', async () => {
     fixtures();vi.mocked(api.saveInstance).mockResolvedValue({ id: 'hospital-one', name: '医院一', organization: 'H1', endpoint: 'http://192.168.1.10:1818/receive', tokenEnv: 'SPD_PR_ONE_TOKEN', enabled: true });
     mount(<IntegrationManagement permissions={['integration:read', 'integration:manage']} settingsOnly />);

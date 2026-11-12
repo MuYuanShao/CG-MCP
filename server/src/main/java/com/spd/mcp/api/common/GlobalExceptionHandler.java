@@ -16,9 +16,7 @@ public class GlobalExceptionHandler {
 
   @ExceptionHandler(BusinessException.class)
   public ResponseEntity<ApiResponse<Void>> handleBusinessException(BusinessException exception) {
-    return ResponseEntity
-        .status(exception.getStatus())
-        .body(ApiResponse.error(exception.getCode(), exception.getMessage()));
+    return ApiFailure.from(exception).response();
   }
 
   @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -30,7 +28,7 @@ public class GlobalExceptionHandler {
 
   @ExceptionHandler(DuplicateKeyException.class)
   public ResponseEntity<ApiResponse<Void>> handleDuplicateKeyException(DuplicateKeyException exception) {
-    return ResponseEntity.badRequest().body(ApiResponse.error("DUPLICATE_KEY", "编码或唯一字段已存在"));
+    return ApiFailure.from(exception).response();
   }
 
   @ExceptionHandler(NoResourceFoundException.class)
@@ -43,8 +41,6 @@ public class GlobalExceptionHandler {
   @ExceptionHandler(Exception.class)
   public ResponseEntity<ApiResponse<Void>> handleException(Exception exception) {
     log.error("Unhandled API exception", exception);
-    return ResponseEntity
-        .internalServerError()
-        .body(ApiResponse.error("INTERNAL_SERVER_ERROR", "系统异常，请稍后重试"));
+    return ApiFailure.from(exception).response();
   }
 }

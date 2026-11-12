@@ -41,20 +41,105 @@ public class HospitalSupplyService {
         }
     }
     private JsonNode order(String instance,String no,boolean supplierOnly) {
-        active(instance,false);var args=new ArrayList<Object>(List.of(t(),instance,no));var sql=new StringBuilder("SELECT doc.payload FROM spd_record doc WHERE doc.tenant_id=? AND doc.instance_id=? AND doc.kind='order' AND doc.source_code=?");scope(sql,args,supplierOnly);
+        active(instance,false);var args=new ArrayList<Object>(List.of(t(),instance,no));var sql=new StringBuilder("SELECT COALESCE(doc.payload_exact,CAST(doc.payload AS CHAR)) FROM spd_record doc WHERE doc.tenant_id=? AND doc.instance_id=? AND doc.kind='order' AND doc.source_code=?");scope(sql,args,supplierOnly);
         var rows=db.queryForList(sql.toString(),String.class,args.toArray());
-        if(rows.size()!=1)throw new BusinessException("ORDER_NOT_FOUND","医院订单不存在或未绑定该供应商",HttpStatus.NOT_FOUND);return Phase3Json.parse(rows.get(0));
+        if(rows.size()!=1)throw new BusinessException("ORDER_NOT_FOUND","医院订单不存在或未绑定该供应商",HttpStatus.NOT_FOUND);return repo.parse(rows.get(0));
     }
     public Object orders(String instance,int page,int size,String query) {
         active(instance,false);check(page>0&&size>0&&size<=200,"PAGE_INVALID","分页参数不合法");
         var args=new ArrayList<Object>(List.of(t(),instance));var where=new StringBuilder(" WHERE doc.tenant_id=? AND doc.instance_id=? AND doc.kind='order'");scope(where,args,false);
         if(query!=null&&!query.isBlank()){where.append(" AND doc.source_code LIKE ?");args.add("%"+query.trim()+"%");}
         long total=db.queryForObject("SELECT COUNT(*) FROM spd_record doc"+where,Long.class,args.toArray());args.add(size);args.add((long)(page-1)*size);
-        var rows=db.queryForList("SELECT doc.payload FROM spd_record doc"+where+" ORDER BY doc.source_code LIMIT ? OFFSET ?",String.class,args.toArray()).stream().map(Phase3Json::parse).toList();
+        var rows=db.queryForList("SELECT COALESCE(doc.payload_exact,CAST(doc.payload AS CHAR)) FROM spd_record doc"+where+" ORDER BY doc.source_code LIMIT ? OFFSET ?",String.class,args.toArray()).stream().map(repo::parse).toList();
         return Map.of("rows",rows,"total",total,"page",page,"size",size);
     }
     public Object options(String instance,String no) {
         JsonNode order=order(instance,no,true);var target=active(instance,false);return request(target,null,"GET","/supply-options?organization="+encode(target.organization())+"&orderNo="+encode(no)+"&supplierCode="+encode(order.path("supplierCode").asText()),null,Duration.ofSeconds(15));
+    }
+    public record Draft(String draftId,String instanceId,String orderNo,String supplierCode,String hospital,JsonNode body) {}
+
+    public Object supplyOrders(int page,int size) {
+        requireEnabled();
+        check(page>0&&size>0&&size<=100,"PAGE_INVALID","分页参数不合法");
+        long owner=user();
+        String scope = """
+            FROM spd_supply_outbox s JOIN spd_instance i ON i.id=s.instance_id AND i.tenant_id=s.tenant_id
+            WHERE s.tenant_id=? AND s.user_id=?
+              AND EXISTS(SELECT 1 FROM spd_phase3_supplier_access a WHERE a.tenant_id=s.tenant_id AND a.instance_id=s.instance_id AND a.user_id=s.user_id AND a.supplier_code=s.supplier_code)
+            """;
+        Long total=db.queryForObject("SELECT COUNT(*) "+scope,Long.class,t(),owner);
+        var rows=db.queryForList("""
+            SELECT s.message_id AS messageId,s.instance_id AS instanceId,s.order_no AS orderNo,
+              s.supply_no AS supplyNo,s.supplier_code AS supplierCode,i.name AS hospital,
+              s.state,s.message,s.result,s.created_at AS createdAt
+            """+scope+" ORDER BY s.created_at DESC,s.message_id DESC LIMIT ? OFFSET ?",t(),owner,size,(long)(page-1)*size);
+        rows.forEach(row->{if(row.get("result")!=null)row.put("result",Phase3Json.parse(row.get("result").toString()));});
+        return Map.of("rows",rows,"total",total==null?0:total,"page",page,"size",size);
+    }
+
+    public List<Draft> drafts() {
+        requireEnabled();
+        return db.query("""
+            SELECT d.draft_id,d.instance_id,d.order_no,d.supplier_code,i.name,d.payload
+            FROM spd_supply_draft d JOIN spd_instance i ON i.id=d.instance_id AND i.tenant_id=d.tenant_id AND i.enabled=1
+            JOIN spd_record o ON o.tenant_id=d.tenant_id AND o.instance_id=d.instance_id AND o.kind='order' AND o.source_code=d.order_no
+            WHERE d.tenant_id=? AND d.user_id=? AND d.supplier_code=JSON_UNQUOTE(JSON_EXTRACT(o.payload,'$.supplierCode'))
+              AND EXISTS(SELECT 1 FROM spd_phase3_supplier_access a WHERE a.tenant_id=d.tenant_id AND a.instance_id=d.instance_id AND a.user_id=d.user_id AND a.supplier_code=d.supplier_code)
+            ORDER BY d.updated_at DESC,d.draft_id
+            """,(rs,n)->new Draft(rs.getString(1),rs.getString(2),rs.getString(3),rs.getString(4),rs.getString(5),Phase3Json.parse(rs.getString(6))),t(),user());
+    }
+
+    @Transactional
+    public Draft openDraft(String instance,String no) {
+        var target=active(instance,true);
+        var order=order(instance,no,true);
+        check(Set.of("approved","sent").contains(order.path("status").asText()),"ORDER_STATUS_INVALID","当前医院订单不允许供货");
+        String supplier=order.path("supplierCode").asText();
+        long owner=user();
+        String id=UUID.randomUUID().toString();
+        String initial=Phase3Json.json(Map.of("supplyNo","GH-"+id,"warehouseCode","","remark","","items",List.of()));
+        db.update("""
+            INSERT INTO spd_supply_draft(draft_id,tenant_id,instance_id,order_no,supplier_code,user_id,payload)
+            VALUES(?,?,?,?,?,?,CAST(? AS JSON)) ON DUPLICATE KEY UPDATE draft_id=spd_supply_draft.draft_id
+            """,id,t(),instance,no,supplier,owner,initial);
+        return db.queryForObject("""
+            SELECT draft_id,payload FROM spd_supply_draft WHERE tenant_id=? AND instance_id=? AND order_no=? AND supplier_code=? AND user_id=?
+            """,(rs,n)->new Draft(rs.getString(1),instance,no,supplier,target.name(),Phase3Json.parse(rs.getString(2))),t(),instance,no,supplier,owner);
+    }
+
+    @Transactional
+    public Draft saveDraft(String instance,String no,String draftId,JsonNode body) {
+        var target=active(instance,true);
+        var order=order(instance,no,true);
+        check(Set.of("approved","sent").contains(order.path("status").asText()),"ORDER_STATUS_INVALID","当前医院订单不允许供货");
+        check(body.path("items").isArray()&&body.path("items").size()<=1000,"ITEMS_INVALID","供货明细最多1000条");
+        var draftBody=Phase3Json.MAPPER.createObjectNode();
+        copyDraftText(body,draftBody,Map.of("supplyNo",100,"warehouseCode",100,"remark",500));
+        var draftLines=draftBody.putArray("items");
+        var identities=new HashSet<String>();
+        for (var line : body.path("items")) {
+            String identity=text(line,"supplyLineId",100);
+            check(identities.add(identity),"DUPLICATE_LINE","供货草稿批次身份重复");
+            text(line,"orderLineId",19);
+            copyDraftText(line,draftLines.addObject(),Map.of("supplyLineId",100,"orderLineId",19,
+                "productCode",100,"unit",20,"quantity",14,"productionBatchNo",100,
+                "productionDate",10,"expireDate",10,"udiCode",120));
+        }
+        String supplier=order.path("supplierCode").asText();
+        int changed=db.update("""
+            UPDATE spd_supply_draft SET payload=CAST(? AS JSON)
+            WHERE tenant_id=? AND instance_id=? AND order_no=? AND supplier_code=? AND user_id=? AND draft_id=?
+            """,Phase3Json.json(draftBody),t(),instance,no,supplier,user(),draftId);
+        conflict(changed==1,"DRAFT_CHANGED","供货草稿已提交或不可用，请重新打开");
+        return new Draft(draftId,instance,no,supplier,target.name(),draftBody);
+    }
+
+    private void copyDraftText(JsonNode source,ObjectNode target,Map<String,Integer> limits) {
+        limits.forEach((field,limit)->{
+            var value=source.path(field);
+            check(value.isTextual()&&value.textValue().length()<=limit,"DRAFT_FIELD_INVALID","草稿字段格式或长度不合法："+field);
+            target.put(field,value.textValue());
+        });
     }
     @Transactional public Object submit(String instance,String no,String key,JsonNode body) {
         var target=active(instance,true);UUID.fromString(key);JsonNode order=order(instance,no,true);long user=user();
@@ -84,6 +169,8 @@ public class HospitalSupplyService {
         String json=Phase3Json.json(wire);check(json.getBytes(StandardCharsets.UTF_8).length<=2*1024*1024,"BODY_TOO_LARGE","供货消息超过2MB");
         conflict(db.queryForList("SELECT message_id FROM spd_supply_outbox WHERE tenant_id=? AND instance_id=? AND order_no=? AND supplier_code=? AND active_supply_no=? FOR UPDATE",t(),instance,no,order.path("supplierCode").asText(),supplyNo).isEmpty(),"SUPPLY_NO_CONFLICT","此订单的供货单号已提交，请查看原回传记录");
         db.update("INSERT INTO spd_supply_outbox(message_id,tenant_id,instance_id,order_no,supplier_code,supply_no,user_id,request_hash,payload,target_endpoint) VALUES(?,?,?,?,?,?,?,?,CAST(? AS JSON),?)",key,t(),instance,no,order.path("supplierCode").asText(),supplyNo,user,hash,json,target.endpoint());
+        db.update("DELETE FROM spd_supply_draft WHERE tenant_id=? AND instance_id=? AND order_no=? AND supplier_code=? AND user_id=? AND draft_id=?",
+            t(),instance,no,order.path("supplierCode").asText(),user,key);
         return Map.of("messageId",key,"state","pending");
     }
     public Object supplies(String instance,String no,int page,int size) {

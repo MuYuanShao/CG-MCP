@@ -1,5 +1,5 @@
 ﻿import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Search,
   Download,
@@ -36,22 +36,19 @@ import PurchaseOrdersTab from './PurchaseOrdersTab';
 import DeliveryEditDialog from './DeliveryEditDialog';
 import ApprovalScopeDialog from './ApprovalScopeDialog';
 import { getStoredAuthUser } from '../services/auth';
+import { openSupplyDraft, type SupplyDraft } from '../services/hospitalSupply';
+import { groupImportedPlans, type ImportedOrder, type ImportedPlanLine } from '../lib/importedPurchasePlans';
+import PurchaseSupplyDraft from './PurchaseSupplyDraft';
+import PurchaseSupplyOrders from './PurchaseSupplyOrders';
 
 interface PurchaseManagementProps {
   isAdministrator?: boolean;
+  permissions?: string[];
 }
 
-interface PurchasePlan {
-  id: number;
-  orderNo: string;
-  productCode: string;
-  productName: string;
-  spec: string;
-  model: string;
-  unit: string;
-  planQty: number;
-  unitPrice: number;
+interface PurchasePlan extends ImportedPlanLine {
   registrationNo: string;
+  zcLocalCode?: string;
   manufacturer: string;
   planDate: string;
   status: 'draft' | 'pending_approval' | 'rejected' | 'pending_order' | 'partial' | 'completed';
@@ -134,16 +131,17 @@ const mockShipments: ShipmentOrder[] = [
 
 const mapBusinessPlanToPurchasePlan = (plan: BusinessDocument): PurchasePlan => ({
   id: plan.id,
-  orderNo: plan.documentNo,
-  productCode: '',
+  orderNo: plan.sourceNo || plan.documentNo,
+  productCode: plan.planFields?.productCode ?? '',
   productName: plan.productName,
-  spec: '',
-  model: '',
-  unit: '',
+  spec: plan.planFields?.spec ?? '',
+  model: plan.planFields?.model ?? '',
+  unit: plan.planFields?.unit ?? '',
   planQty: plan.quantity ?? 0,
-  unitPrice: plan.quantity ? Number(plan.amount ?? 0) / plan.quantity : 0,
-  registrationNo: '',
-  manufacturer: '',
+  unitPrice: Number(plan.planFields?.unitPrice ?? (plan.quantity ? Number(plan.amount ?? 0) / plan.quantity : 0)),
+  registrationNo: plan.planFields?.registrationNo ?? '',
+  zcLocalCode: plan.planFields?.zcLocalCode,
+  manufacturer: plan.planFields?.manufacturer ?? '',
   planDate: plan.businessDate ?? '',
   status: plan.status === 'ordered'
     ? 'completed'
@@ -152,6 +150,19 @@ const mapBusinessPlanToPurchasePlan = (plan: BusinessDocument): PurchasePlan => 
       : plan.status as PurchasePlan['status'],
   canApprove: Boolean(plan.canApprove),
   canEdit: plan.canEdit !== false,
+  sourceStatus: plan.planFields?.sourceStatus ?? undefined,
+  hospital: plan.hospital,
+  supplierCode: plan.planFields?.supplierCode,
+  amount: plan.amount,
+  currency: plan.planFields?.currency,
+  taxIncluded: plan.planFields?.taxIncluded,
+  instanceId: plan.planFields?.instanceId,
+  sourceLineId: plan.planFields?.sourceLineId,
+  supplierName: plan.planFields?.supplierName,
+  receivingAddress: plan.planFields?.receivingAddress === 'null' ? undefined : plan.planFields?.receivingAddress,
+  quantityExact: plan.planFields?.quantityExact,
+  amountExact: plan.planFields?.amountExact,
+  unitPriceExact: plan.planFields?.unitPriceExact,
 });
 
 const mapBusinessOrderToPurchaseOrder = (order: BusinessDocument): PurchaseOrder => ({
@@ -165,9 +176,20 @@ const mapBusinessOrderToPurchaseOrder = (order: BusinessDocument): PurchaseOrder
   status: order.status as PurchaseOrder['status'],
 });
 
-export default function PurchaseManagement({ isAdministrator = false }: PurchaseManagementProps) {
+export default function PurchaseManagement({ isAdministrator = false, permissions = [] }: PurchaseManagementProps) {
   const { notify, confirm } = useFeedback();
+  const client = useQueryClient();
   const [activeTab, setActiveTab] = useState<'plan' | 'order'>('plan');
+  const [supplyDraft, setSupplyDraft] = useState<SupplyDraft | null>(null);
+  const canSupply = permissions.includes('integration:supply') && permissions.includes('integration:phase3:read');
+  const createSupply = useMutation({
+    mutationFn: (order: ImportedOrder) => {
+      if (!order.header.instanceId || !canSupply) throw new Error('当前订单不可生成供货单');
+      return openSupplyDraft(order.header.instanceId, order.header.orderNo);
+    },
+    onSuccess: draft => { setSupplyDraft(draft); setActiveTab('order'); void client.invalidateQueries({ queryKey: ['purchase-supply-drafts'] }); },
+    onError: error => notify.error(error.message),
+  });
   const [showApprovalScopeDialog, setShowApprovalScopeDialog] = useState(false);
   const [showPlanEditDialog, setShowPlanEditDialog] = useState(false);
   const [planEditForm, setPlanEditForm] = useState({ quantity: 1, unitPrice: 0.01, expectedDeliveryDate: '' });
@@ -198,8 +220,27 @@ export default function PurchaseManagement({ isAdministrator = false }: Purchase
   const [orderDetailSearchForm, setOrderDetailSearchForm] = useState({ productCode: '', productName: '', batchNo: '', manufacturer: '' });
   const [orderDetailSearchParams, setOrderDetailSearchParams] = useState<PurchaseOrderDetailSearchParams>({ current: 1, size: 10 });
 
-  const purchasePlansQuery = useQuery({ queryKey: ['purchase-plans'], queryFn: () => listPurchasePlans() });
-  const purchasePlans = (purchasePlansQuery.data?.records ?? []).map(mapBusinessPlanToPurchasePlan);
+  const purchasePlansQuery = useQuery({
+    queryKey: ['purchase-plans'],
+    queryFn: () => listPurchasePlans(),
+    refetchInterval: activeTab === 'plan' ? 30_000 : false,
+  });
+  const includes = (value: string, filter: string) => value.toLowerCase().includes(filter.trim().toLowerCase());
+  const allPurchasePlans = (purchasePlansQuery.data?.records ?? []).map(mapBusinessPlanToPurchasePlan);
+  const matchingPlans = allPurchasePlans.filter(plan =>
+    includes(plan.orderNo, planSearchForm.orderNo)
+    && includes(plan.productCode, planSearchForm.productCode)
+    && includes(plan.productName, planSearchForm.productName)
+    && includes(plan.manufacturer, planSearchForm.manufacturer)
+    && includes(plan.registrationNo, planSearchForm.registrationNo)
+    && (!planSearchForm.startDate || plan.planDate >= planSearchForm.startDate)
+    && (!planSearchForm.endDate || Boolean(plan.planDate && plan.planDate <= planSearchForm.endDate))
+  );
+  const purchasePlans = matchingPlans.filter(plan => !plan.sourceStatus);
+  const matchingIds = new Set(matchingPlans.map(plan => plan.id));
+  const allImportedOrders = groupImportedPlans(allPurchasePlans);
+  const importedOrders = allImportedOrders.filter(order => order.lines.some(line => matchingIds.has(line.id)));
+  const draftOrder = allImportedOrders.find(order => order.header.instanceId === supplyDraft?.instanceId && order.header.orderNo === supplyDraft?.orderNo);
 
   const purchaseOrdersQuery = useQuery({ queryKey: ['purchase-orders', orderSearchParams], queryFn: () => listPurchaseOrders(orderSearchParams) });
   const purchaseOrders = (purchaseOrdersQuery.data?.records ?? []).map(mapBusinessOrderToPurchaseOrder);
@@ -218,7 +259,7 @@ export default function PurchaseManagement({ isAdministrator = false }: Purchase
   const orderDetailTotalPages = Math.max(1, Math.ceil(orderDetailTotal / orderDetailSize));
 
   const handlePlanSelectAll = () => {
-    const selectableIds = purchasePlans.filter((plan) => plan.status !== 'pending_approval' || plan.canEdit).map((plan) => plan.id);
+    const selectableIds = purchasePlans.filter((plan) => !plan.sourceStatus && (plan.status !== 'pending_approval' || plan.canEdit)).map((plan) => plan.id);
     if (selectedPlanRows.length === selectableIds.length) setSelectedPlanRows([]);
     else setSelectedPlanRows(selectableIds);
   };
@@ -492,7 +533,7 @@ export default function PurchaseManagement({ isAdministrator = false }: Purchase
         </button>
         <button onClick={() => setActiveTab('order')}
           className={`px-4 py-2 border-b-2 transition-colors ${activeTab === 'order' ? 'border-primary text-primary font-medium' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
-          采购订单
+          采购订单（供货单）
         </button>
       </div>
 
@@ -513,12 +554,34 @@ export default function PurchaseManagement({ isAdministrator = false }: Purchase
           onConvertPlanToOrder={handleConvertPlanToOrder}
           isLoading={purchasePlansQuery.isLoading}
           planSearchForm={planSearchForm}
-          onUpdatePlanSearchForm={setPlanSearchForm}
-          onResetPlanSearch={() => setPlanSearchForm({ productCode: '', productName: '', manufacturer: '', orderNo: '', startDate: '', endDate: '', registrationNo: '' })}
+          onUpdatePlanSearchForm={form => { setPlanSearchForm(form); setSelectedPlanRows([]); }}
+          onResetPlanSearch={() => {
+            setPlanSearchForm({ productCode: '', productName: '', manufacturer: '', orderNo: '', startDate: '', endDate: '', registrationNo: '' });
+            setSelectedPlanRows([]);
+          }}
+          onRefreshPlans={() => { void purchasePlansQuery.refetch(); }}
+          importedOrders={importedOrders}
+          showImportedOrders={canSupply || permissions.includes('integration:read') || allImportedOrders.length > 0}
+          canSupply={canSupply}
+          creatingSupply={createSupply.isPending}
+          onCreateSupply={async order => {
+            try { await createSupply.mutateAsync(order); return true; } catch { return false; }
+          }}
         />
       )}
 
-      {activeTab === 'order' && (
+      {activeTab === 'order' && canSupply && (supplyDraft
+        ? <PurchaseSupplyDraft key={supplyDraft.draftId} draft={supplyDraft} order={draftOrder}
+            onBack={() => { setSupplyDraft(null); setActiveTab('plan'); }}
+            onSaved={() => { void client.invalidateQueries({ queryKey: ['purchase-supply-drafts'] }); }}
+            onSubmitted={() => {
+              setSupplyDraft(null);
+              void client.invalidateQueries({ queryKey: ['purchase-supply-drafts'] });
+              void client.invalidateQueries({ queryKey: ['purchase-supply-orders'] });
+            }} />
+        : <PurchaseSupplyOrders onOpen={setSupplyDraft} />)}
+
+      {activeTab === 'order' && !supplyDraft && (
         <PurchaseOrdersTab
           purchaseOrders={purchaseOrders}
           selectedOrderRows={selectedOrderRows}

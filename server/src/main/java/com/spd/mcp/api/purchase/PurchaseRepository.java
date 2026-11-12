@@ -25,17 +25,23 @@ public class PurchaseRepository {
     this.idGenerator = idGenerator;
   }
 
-  public List<BusinessDocumentDto> plans(long tenantId) {
+  public List<BusinessDocumentDto> plans(long tenantId, boolean includeSpdOrders, String supplierUser) {
     return jdbcTemplate.query("""
         SELECT
           p.id,
           p.plan_no AS document_no,
-          '' AS source_no,
-          h.hospital_name AS hospital,
+          COALESCE(p.spd_order_no, '') AS source_no,
+          COALESCE(h.hospital_name, i.name, '') AS hospital,
           pr.product_name AS product_name,
           p.plan_qty AS quantity,
-          p.plan_qty * p.unit_price AS amount,
-          p.expected_delivery_date AS business_date,
+          COALESCE(p.spd_amount,p.plan_qty * p.unit_price) AS amount,
+          COALESCE(p.spd_order_date,p.expected_delivery_date) AS business_date,
+          pr.product_code, pr.spec, pr.model, COALESCE(p.spd_unit,pr.unit) AS unit,
+          p.unit_price, pr.registration_no, pr.manufacturer, pr.zc_local_code, p.spd_order_status,
+          p.spd_supplier_code, p.spd_currency, p.spd_tax_included,
+          p.spd_instance_id,p.spd_line_id,
+          JSON_UNQUOTE(JSON_EXTRACT(s.payload,'$.name')) AS spd_supplier_name,
+          JSON_UNQUOTE(JSON_EXTRACT(o.payload,'$.receivingAddress')) AS spd_receiving_address,
           CASE p.status
             WHEN 0 THEN 'draft'
             WHEN 1 THEN 'pending_approval'
@@ -46,12 +52,34 @@ public class PurchaseRepository {
             ELSE 'closed'
           END AS status
         FROM biz_purchase_plan p
-        JOIN biz_hospital h ON h.id = p.hospital_id AND h.tenant_id = p.tenant_id
+        LEFT JOIN biz_hospital h ON h.id = p.hospital_id AND h.tenant_id = p.tenant_id
+        LEFT JOIN spd_instance i ON i.id = p.spd_instance_id AND i.tenant_id = p.tenant_id
+        LEFT JOIN spd_record s ON s.tenant_id=p.tenant_id AND s.instance_id=p.spd_instance_id
+          AND s.kind='supplier' AND s.source_code=p.spd_supplier_code
+        LEFT JOIN spd_record o ON o.tenant_id=p.tenant_id AND o.instance_id=p.spd_instance_id
+          AND o.kind='order' AND o.source_code=p.spd_order_no
         JOIN biz_product pr ON pr.id = p.product_id AND pr.tenant_id = p.tenant_id
-        WHERE p.tenant_id = ? AND p.deleted = 0
-        ORDER BY p.created_time DESC
-        LIMIT 100
-        """, this::mapDocument, tenantId);
+        WHERE p.tenant_id = ? AND p.deleted = 0 AND (? OR p.spd_instance_id IS NULL OR EXISTS (
+          SELECT 1 FROM spd_phase3_supplier_access a
+          JOIN sys_user u ON u.id=a.user_id AND u.tenant_id=a.tenant_id AND u.status=1 AND u.deleted=0
+          WHERE a.tenant_id=p.tenant_id AND a.instance_id=p.spd_instance_id
+            AND a.supplier_code=p.spd_supplier_code AND u.username=NULLIF(?,'')
+        ))
+        ORDER BY p.created_time DESC, p.id DESC
+        """, (rs, row) -> {
+      var plan = mapDocument(rs, row);
+      boolean imported = !plan.sourceNo().isEmpty();
+      var fields = new BusinessDocumentDto.PlanFields(rs.getString("product_code"), rs.getString("spec"),
+          rs.getString("model"), rs.getString("unit"), rs.getBigDecimal("unit_price"),
+          rs.getString("registration_no"), rs.getString("manufacturer"), rs.getString("spd_order_status"),
+          rs.getString("spd_supplier_code"), rs.getString("spd_currency"),
+          imported ? rs.getBoolean("spd_tax_included") : null, rs.getString("spd_instance_id"),
+          rs.getString("spd_line_id"), rs.getString("spd_supplier_name"), rs.getString("spd_receiving_address"),
+          rs.getString("quantity"), rs.getString("amount"), rs.getString("unit_price"), rs.getString("zc_local_code"));
+      return new BusinessDocumentDto(plan.id(), plan.documentNo(), plan.sourceNo(), plan.hospital(),
+          plan.productName(), imported ? (Number) rs.getBigDecimal("quantity") : plan.quantity(),
+          plan.amount(), plan.businessDate(), plan.status(), false, false, fields);
+    }, tenantId, includeSpdOrders, supplierUser);
   }
 
   public Optional<Integer> findPlanStatus(long tenantId, long planId) {
@@ -74,7 +102,7 @@ public class PurchaseRepository {
     int affectedRows = jdbcTemplate.update("""
         UPDATE biz_purchase_plan
         SET status = ?, updated_time = CURRENT_TIMESTAMP
-        WHERE tenant_id = ? AND id = ? AND deleted = 0 AND status = 1
+        WHERE tenant_id = ? AND id = ? AND deleted = 0 AND status = 1 AND spd_instance_id IS NULL
         """, targetStatus, tenantId, planId);
     if (affectedRows == 0) {
       if (findPlanStatus(tenantId, planId).isEmpty()) {
@@ -88,7 +116,7 @@ public class PurchaseRepository {
     int affectedRows = jdbcTemplate.update("""
         UPDATE biz_purchase_plan
         SET plan_qty = ?, unit_price = ?, expected_delivery_date = ?, status=CASE WHEN status=2 THEN 0 ELSE status END, updated_time = CURRENT_TIMESTAMP
-        WHERE tenant_id = ? AND id = ? AND deleted = 0 AND status=? AND status IN (0,1,2,3)
+        WHERE tenant_id = ? AND id = ? AND deleted = 0 AND status=? AND status IN (0,1,2,3) AND spd_instance_id IS NULL
         """, request.quantity(), request.unitPrice(), request.expectedDeliveryDate(), tenantId, planId,expectedStatus);
     if (affectedRows == 0) {
       if(findPlanStatus(tenantId,planId).isEmpty()) throw new BusinessException("PLAN_NOT_FOUND", "采购计划不存在", HttpStatus.NOT_FOUND);
@@ -97,7 +125,7 @@ public class PurchaseRepository {
   }
 
   public void submitPlan(long tenantId,long planId) {
-    int changed=jdbcTemplate.update("UPDATE biz_purchase_plan SET status=1,updated_time=CURRENT_TIMESTAMP WHERE tenant_id=? AND id=? AND deleted=0 AND status=0",tenantId,planId);
+    int changed=jdbcTemplate.update("UPDATE biz_purchase_plan SET status=1,updated_time=CURRENT_TIMESTAMP WHERE tenant_id=? AND id=? AND deleted=0 AND status=0 AND spd_instance_id IS NULL",tenantId,planId);
     if(changed!=1) throw new BusinessException("PLAN_SUBMIT_STATUS_INVALID","仅草稿采购计划可提交，请先修改驳回计划并刷新");
   }
 
@@ -440,7 +468,7 @@ public class PurchaseRepository {
           pr.product_code, pr.product_name, pr.spec, pr.model, pr.unit, pr.manufacturer
         FROM biz_purchase_plan p
         JOIN biz_product pr ON pr.id = p.product_id AND pr.tenant_id = p.tenant_id
-        WHERE p.tenant_id = ? AND p.plan_no = ? AND p.deleted = 0
+        WHERE p.tenant_id = ? AND p.plan_no = ? AND p.deleted = 0 AND p.spd_instance_id IS NULL
         """, this::mapPlanSeed, tenantId, planNo).stream().findFirst();
   }
 

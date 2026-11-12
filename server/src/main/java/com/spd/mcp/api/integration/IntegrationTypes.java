@@ -25,10 +25,14 @@ public final class IntegrationTypes {
       @NotNull LocalDate orderDate, @NotBlank @Pattern(regexp="draft|pending_approval|approved|sent|rejected|voided|submitted|confirmed|partial_shipped|shipped|arrived|accepted|completed|closed|cancelled") String status,
       @NotNull @DecimalMin("0") BigDecimal totalAmount, @NotBlank @Pattern(regexp="[A-Z]{3}") String currency,
       @NotNull Boolean taxIncluded, @NotNull Instant sourceUpdatedAt,
-      @NotEmpty @Size(max=1000) List<@Valid OrderItem> items,
-      @Pattern(regexp="[1-9][0-9]{0,18}") String sourcePlanId,@Size(max=100) String sourcePlanNo) {
+      @NotEmpty @Size(max=1000) List<@NotNull @Valid OrderItem> items,
+      @Pattern(regexp="[1-9][0-9]{0,18}") String sourcePlanId,@Size(max=100) String sourcePlanNo,
+      @Size(max=300) String receivingAddress) {
     public OrderRequest(String orderNo,String supplierCode,LocalDate orderDate,String status,BigDecimal totalAmount,String currency,Boolean taxIncluded,Instant sourceUpdatedAt,List<OrderItem> items) {
-      this(orderNo,supplierCode,orderDate,status,totalAmount,currency,taxIncluded,sourceUpdatedAt,items,null,null);
+      this(orderNo,supplierCode,orderDate,status,totalAmount,currency,taxIncluded,sourceUpdatedAt,items,null,null,null);
+    }
+    public OrderRequest(String orderNo,String supplierCode,LocalDate orderDate,String status,BigDecimal totalAmount,String currency,Boolean taxIncluded,Instant sourceUpdatedAt,List<OrderItem> items,String sourcePlanId,String sourcePlanNo) {
+      this(orderNo,supplierCode,orderDate,status,totalAmount,currency,taxIncluded,sourceUpdatedAt,items,sourcePlanId,sourcePlanNo,null);
     }
   }
   public record DispatchRequest(@NotEmpty @Size(max=100) List<@NotNull @Positive Long> productIds, boolean licensesOnly) {}

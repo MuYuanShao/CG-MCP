@@ -28,11 +28,14 @@ public class IntegrationService {
   private final Path licenseRoot;
   private final TransactionTemplate transactions;
   private final Phase2Service phase2;
+  private final SpdOrderPlanService orderPlans;
   public IntegrationService(IntegrationRepository repo,TenantContext tenant,ProductRepository products,JdbcTemplate db,ObjectMapper mapper,SpdTransport transport,
-      @Value("${app.upload.license-dir:uploads/licenses}") String licenseRoot, PlatformTransactionManager transactionManager,Phase2Service phase2) {
+      @Value("${app.upload.license-dir:uploads/licenses}") String licenseRoot, PlatformTransactionManager transactionManager,Phase2Service phase2,
+      SpdOrderPlanService orderPlans) {
     this.repo=repo;this.tenant=tenant;this.products=products;this.db=db;this.mapper=mapper;this.transport=transport;this.licenseRoot=Path.of(licenseRoot).toAbsolutePath().normalize();
     this.transactions=new TransactionTemplate(transactionManager);
     this.phase2=phase2;
+    this.orderPlans=orderPlans;
   }
   private long tenantId() { return tenant.currentTenantId(); }
   public List<Instance> instances() { return repo.instances(tenantId()); }
@@ -58,34 +61,40 @@ public class IntegrationService {
   public SyncLog uploadMaster(String id,String kind,MasterRequest request) {
     active(id,true);
     if(!Set.of("supplier","manufacturer").contains(kind)) throw new BusinessException("KIND_INVALID","基础资料类型不合法");
-    return store(id,kind,request.sourceCode(),request.sourceUpdatedAt(),request,()->{});
+    return store(id,kind,request.sourceCode(),request.sourceUpdatedAt(),request);
   }
   @Transactional
   public SyncLog uploadOrder(String id,OrderRequest request) {
     active(id,true);
-    return store(id,"order",request.orderNo(),request.sourceUpdatedAt(),request,()->validateOrder(id,request));
+    return store(id,"order",request.orderNo(),request.sourceUpdatedAt(),request);
   }
-  private SyncLog store(String id,String kind,String code,Instant timestamp,Object payload,Runnable validation) {
+  private SyncLog store(String id,String kind,String code,Instant timestamp,Object payload) {
     String state="processed",message="处理成功";
     var old=repo.record(tenantId(),id,kind,code);
     if(old.isPresent() && !IntegrationRules.isNewer(timestamp,Instant.parse(old.get().sourceUpdatedAt()))) {
       state="ignored";message="重复或旧版本，未覆盖已保存数据";
     } else {
-      try { validation.run(); }
+      Map<String,Long> productIds;
+      try { productIds = payload instanceof OrderRequest order ? validateOrder(id,order) : Map.of(); }
       catch (BusinessException e) { return repo.log(tenantId(),id,UUID.randomUUID().toString(),"upload",kind,code,"failed",e.getMessage(),payload); }
       repo.saveRecord(tenantId(),id,kind,code,timestamp.toString(),payload);
+      if (payload instanceof OrderRequest order) orderPlans.sync(tenantId(),id,order,productIds);
     }
     return repo.log(tenantId(),id,UUID.randomUUID().toString(),"upload",kind,code,state,message,payload);
   }
-  private void validateOrder(String id,OrderRequest order) {
+  private Map<String,Long> validateOrder(String id,OrderRequest order) {
     IntegrationRules.validateOrder(order);
+    SpdOrderPlanService.validatePrecision(order);
     phase2.validateOrderAmendment(id,order);
     if(repo.record(tenantId(),id,"supplier",order.supplierCode()).isEmpty()) throw new BusinessException("SUPPLIER_UNMAPPED","供应商不存在: "+order.supplierCode());
+    var productIds = new HashMap<String,Long>();
     for(var item:order.items()) {
-      long product=repo.mappedProduct(tenantId(),id,item.productCode()).orElseThrow(()->new BusinessException("PRODUCT_UNMAPPED","商品未匹配: "+item.productCode()));
+      long product=productIds.computeIfAbsent(item.productCode(), code -> repo.mappedProduct(tenantId(),id,code)
+          .orElseThrow(()->new BusinessException("PRODUCT_UNMAPPED","商品未匹配: "+code)));
       var p=products.findById(tenantId(),product).orElseThrow(()->new BusinessException("PRODUCT_NOT_FOUND","商品不存在: "+item.productCode()));
       if(!Objects.equals(p.unit(),item.unit())) throw new BusinessException("UNIT_MISMATCH","商品单位不一致: "+item.productCode());
     }
+    return productIds;
   }
   public List<SyncLog> dispatch(String id,DispatchRequest request) {
     var instance=active(id,false);
@@ -246,8 +255,8 @@ public class IntegrationService {
     JsonNode payload=repo.logPayload(tenantId(),logId);
     try {
       SyncLog result;
-      if(log.kind().equals("order")) { var r=mapper.treeToValue(payload,OrderRequest.class);result=store(instance.id(),"order",r.orderNo(),r.sourceUpdatedAt(),r,()->validateOrder(instance.id(),r)); }
-      else { var r=mapper.treeToValue(payload,MasterRequest.class);result=store(instance.id(),log.kind(),r.sourceCode(),r.sourceUpdatedAt(),r,()->{}); }
+      if(log.kind().equals("order")) { var r=mapper.treeToValue(payload,OrderRequest.class);result=store(instance.id(),"order",r.orderNo(),r.sourceUpdatedAt(),r); }
+      else { var r=mapper.treeToValue(payload,MasterRequest.class);result=store(instance.id(),log.kind(),r.sourceCode(),r.sourceUpdatedAt(),r); }
       repo.result(tenantId(),logId,"retried","已创建重试记录: "+result.id());return result;
     } catch(com.fasterxml.jackson.core.JsonProcessingException e) { throw new BusinessException("PAYLOAD_INVALID","重试数据无法解析"); }
   }

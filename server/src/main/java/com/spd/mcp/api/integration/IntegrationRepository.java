@@ -1,6 +1,7 @@
 package com.spd.mcp.api.integration;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.spd.mcp.api.common.BusinessException;
 import java.util.*;
@@ -10,6 +11,10 @@ import static com.spd.mcp.api.integration.IntegrationTypes.*;
 
 @Repository
 public class IntegrationRepository {
+  private static final String RECORD_FIELDS = """
+      SELECT instance_id,kind,source_code,source_updated_at,
+        COALESCE(payload_exact,CAST(payload AS CHAR)) AS effective_payload FROM spd_record
+      """;
   private final JdbcTemplate db;
   private final ObjectMapper mapper;
   public IntegrationRepository(JdbcTemplate db, ObjectMapper mapper) { this.db = db; this.mapper = mapper; }
@@ -17,7 +22,8 @@ public class IntegrationRepository {
     try { return mapper.writeValueAsString(value); } catch (Exception e) { throw new IllegalArgumentException("Invalid sync payload", e); }
   }
   public JsonNode parse(String value) {
-    try { return mapper.readTree(value); } catch (Exception e) { throw new IllegalStateException("Invalid stored sync payload", e); }
+    try { return mapper.reader().with(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS).readTree(value); }
+    catch (Exception e) { throw new IllegalStateException("Invalid stored sync payload", e); }
   }
   public List<Instance> instances(long tenant) {
     return db.query("SELECT * FROM spd_instance WHERE tenant_id=? ORDER BY created_time", (rs,n) -> new Instance(
@@ -35,16 +41,17 @@ public class IntegrationRepository {
         r.name(),r.endpoint(),r.tokenEnv(),r.enabled(),tenant,id);
   }
   public List<StoredRecord> records(long tenant, String instance, String kind) {
-    return db.query("SELECT * FROM spd_record WHERE tenant_id=? AND instance_id=? AND kind=? ORDER BY source_code", (rs,n) -> new StoredRecord(
-        rs.getString("instance_id"),rs.getString("kind"),rs.getString("source_code"),rs.getString("source_updated_at"),parse(rs.getString("payload"))),tenant,instance,kind);
+    return db.query(RECORD_FIELDS + " WHERE tenant_id=? AND instance_id=? AND kind=? ORDER BY source_code", (rs,n) -> new StoredRecord(
+        rs.getString("instance_id"),rs.getString("kind"),rs.getString("source_code"),rs.getString("source_updated_at"),parse(rs.getString("effective_payload"))),tenant,instance,kind);
   }
   public Optional<StoredRecord> record(long tenant, String instance, String kind, String code) {
-    return db.query("SELECT * FROM spd_record WHERE tenant_id=? AND instance_id=? AND kind=? AND source_code=?", (rs,n) -> new StoredRecord(
-        rs.getString("instance_id"),rs.getString("kind"),rs.getString("source_code"),rs.getString("source_updated_at"),parse(rs.getString("payload"))),tenant,instance,kind,code).stream().findFirst();
+    return db.query(RECORD_FIELDS + " WHERE tenant_id=? AND instance_id=? AND kind=? AND source_code=?", (rs,n) -> new StoredRecord(
+        rs.getString("instance_id"),rs.getString("kind"),rs.getString("source_code"),rs.getString("source_updated_at"),parse(rs.getString("effective_payload"))),tenant,instance,kind,code).stream().findFirst();
   }
   public void saveRecord(long tenant, String instance, String kind, String code, String timestamp, Object payload) {
-    db.update("INSERT INTO spd_record(id,tenant_id,instance_id,kind,source_code,source_updated_at,payload) VALUES(?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE source_updated_at=VALUES(source_updated_at),payload=VALUES(payload)",
-        UUID.randomUUID().toString(),tenant,instance,kind,code,timestamp,json(payload));
+    String serialized = json(payload);
+    db.update("INSERT INTO spd_record(id,tenant_id,instance_id,kind,source_code,source_updated_at,payload,payload_exact) VALUES(?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE source_updated_at=VALUES(source_updated_at),payload=VALUES(payload),payload_exact=VALUES(payload_exact)",
+        UUID.randomUUID().toString(),tenant,instance,kind,code,timestamp,serialized,"order".equals(kind) ? serialized : null);
   }
   public Optional<Long> mappedProduct(long tenant,String instance,String code) {
     return db.query("SELECT product_id FROM spd_product_mapping WHERE tenant_id=? AND instance_id=? AND source_code=?",(rs,n)->rs.getLong(1),tenant,instance,code).stream().findFirst();
@@ -60,8 +67,9 @@ public class IntegrationRepository {
   }
   public SyncLog log(long tenant,String instance,String batch,String direction,String kind,String code,String state,String message,Object payload) {
     String id=UUID.randomUUID().toString();
-    db.update("INSERT INTO spd_sync_log(id,tenant_id,instance_id,batch_id,direction,kind,source_code,state,message,payload) VALUES(?,?,?,?,?,?,?,?,?,?)",
-        id,tenant,instance,batch,direction,kind,code,state,message,json(payload));
+    String serialized = json(payload);
+    db.update("INSERT INTO spd_sync_log(id,tenant_id,instance_id,batch_id,direction,kind,source_code,state,message,payload,payload_exact) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        id,tenant,instance,batch,direction,kind,code,state,message,serialized,"order".equals(kind) ? serialized : null);
     return logRow(tenant,id);
   }
   public SyncLog logRow(long tenant,String id) {
@@ -69,12 +77,16 @@ public class IntegrationRepository {
         .stream().findFirst().orElseThrow(()->new BusinessException("LOG_NOT_FOUND","同步记录不存在"));
   }
   public JsonNode logPayload(long tenant,String id) {
-    return parse(db.queryForObject("SELECT payload FROM spd_sync_log WHERE tenant_id=? AND id=?",String.class,tenant,id));
+    return parse(db.queryForObject("SELECT COALESCE(payload_exact,CAST(payload AS CHAR)) FROM spd_sync_log WHERE tenant_id=? AND id=?",String.class,tenant,id));
   }
   public List<SyncLog> logs(long tenant,String instance) {
     return db.query("SELECT * FROM spd_sync_log WHERE tenant_id=? AND instance_id=? ORDER BY created_time DESC,id DESC LIMIT 500",(rs,n)->new SyncLog(rs.getString("id"),rs.getString("batch_id"),rs.getString("instance_id"),rs.getString("direction"),rs.getString("kind"),rs.getString("source_code"),rs.getString("state"),rs.getString("message"),rs.getString("created_time")),tenant,instance);
   }
   public void result(long tenant,String id,String state,String message) {
-    db.update("UPDATE spd_sync_log SET state=?,message=? WHERE tenant_id=? AND id=?",state,message,tenant,id);
+    db.update("""
+        UPDATE spd_sync_log SET failure_message=CASE WHEN direction='upload' AND kind='order' AND state='failed'
+          THEN COALESCE(failure_message,message) ELSE failure_message END, state=?,message=?
+        WHERE tenant_id=? AND id=?
+        """,state,message,tenant,id);
   }
 }

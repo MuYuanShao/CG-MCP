@@ -24,5 +24,5 @@ export async function procurementReport(id: string, filters: Record<string, stri
   const query = new URLSearchParams(Object.entries(filters).filter(([, value]) => value));
   return (await requestJson<ProcurementReport>(`${base}/instances/${encodeURIComponent(id)}/report?${query}`)).data;
 }
-export const syncStates: Record<string, string> = { pending: '等待发送', accepted: '接口已接收', processed: '处理成功', failed: '失败／待处理', ignored: '重复或旧版本', retried: '已重试' };
+export const syncStates: Record<string, string> = { pending: '等待发送', accepted: '接口已接收', processed: '处理成功', failed: '失败／待处理', request_failed: '请求被拒绝', ignored: '重复或旧版本', retried: '已重试' };
 export const orderStates: Record<string, string> = { draft: '草稿', pending_approval: '待审批', approved: '审批通过', sent: '已发送供应商', rejected: '已驳回', voided: '已作废', submitted: '已提交', confirmed: '已确认', partial_shipped: '部分发货', shipped: '已发货', arrived: '已到货', accepted: '已验收', completed: '已完成', closed: '已关闭', cancelled: '已取消' };

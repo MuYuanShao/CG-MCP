@@ -3,6 +3,7 @@ package com.spd.mcp.api.purchase;
 import com.spd.mcp.api.common.ApiResponse;
 import com.spd.mcp.api.common.PageResult;
 import com.spd.mcp.api.auth.RequirePermission;
+import com.spd.mcp.api.auth.AuthContext;
 import jakarta.validation.Valid;
 import java.time.LocalDate;
 import java.util.List;
@@ -22,14 +23,20 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api")
 public class PurchaseController {
   private final PurchaseService purchaseService;
+  private final AuthContext auth;
 
-  public PurchaseController(PurchaseService purchaseService) {
+  public PurchaseController(PurchaseService purchaseService, AuthContext auth) {
     this.purchaseService = purchaseService;
+    this.auth = auth;
   }
 
   @GetMapping("/purchase-plans")
   public ApiResponse<List<BusinessDocumentDto>> plans() {
-    return ApiResponse.success(purchaseService.plans());
+    var user = auth.currentUser();
+    boolean canReadSpdOrders = user.map(u -> u.permissions().contains("integration:read")).orElse(false);
+    String supplierUser = user.filter(u -> u.permissions().contains("integration:phase3:read")
+        && u.permissions().contains("integration:supply")).map(u -> u.username()).orElse("");
+    return ApiResponse.success(purchaseService.plans(canReadSpdOrders, supplierUser));
   }
 
   @PostMapping("/purchase-plans/{planId}/approve")

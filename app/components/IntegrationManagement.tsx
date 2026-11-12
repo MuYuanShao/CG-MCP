@@ -12,6 +12,7 @@ import { useFeedback } from './AppFeedback';
 import SpdConnectionAddressFields from './SpdConnectionAddressFields';
 import Phase2Management from './Phase2Management';
 import Phase3Management from './Phase3Management';
+import OrderReceiveLogs from './OrderReceiveLogs';
 import { listInstances, saveInstance, listSyncLogs, retrySync, listIntegrationRecords, procurementReport, syncStates, orderStates, type InstancePayload, type SpdInstance, type Order, type Master, type PricePoint } from '../services/integration';
 
 const initial: InstancePayload = { name: '', organization: '', endpoint: '', tokenEnv: 'SPD_PR_MAIN_TOKEN', enabled: true };
@@ -25,6 +26,7 @@ function LegacyIntegrationManagement({ permissions, settingsOnly = false }: { pe
   const canManage = permissions.includes('integration:manage');
   const [selectedInstance, setSelectedInstance] = useState('');
   const [tab, setTab] = useState('logs');
+  const [settingsTab, setSettingsTab] = useState('connection');
   const [dialog, setDialog] = useState(false);
   const [editId, setEditId] = useState<string>();
   const [form, setForm] = useState(initial);
@@ -51,15 +53,19 @@ function LegacyIntegrationManagement({ permissions, settingsOnly = false }: { pe
   const chartData = report.data?.prices.filter(p => seriesKey(p) === currentSeries).sort((a, b) => a.date.localeCompare(b.date)) || [];
   const masterTable = (label: string, records: typeof suppliers.data) => <section className="space-y-3"><h3 className="font-semibold">{label}</h3><Table><TableHeader><TableRow>{['来源编码', '名称', '统一社会信用代码', '联系人', '电话', '状态', '来源更新时间'].map(h => <TableHead key={h}>{h}</TableHead>)}</TableRow></TableHeader><TableBody>{records?.map(({ payload: m }) => <TableRow key={m.sourceCode}><TableCell>{m.sourceCode}</TableCell><TableCell>{m.name}</TableCell><TableCell>{m.creditCode || '—'}</TableCell><TableCell>{m.contactName || '—'}</TableCell><TableCell>{m.contactPhone || '—'}</TableCell><TableCell>{m.status === 'active' ? '启用' : '停用'}</TableCell><TableCell>{m.sourceUpdatedAt}</TableCell></TableRow>)}</TableBody></Table>{records?.length === 0 && <p className="text-sm text-muted-foreground">暂无上传记录</p>}</section>;
   return <div className="space-y-5">
+    {settingsOnly && <Tabs value={settingsTab} onValueChange={setSettingsTab}>
+      <TabsList><TabsTrigger value="connection">对接配置</TabsTrigger><TabsTrigger value="interface-logs">接口日志</TabsTrigger></TabsList>
+    </Tabs>}
     <div className="flex flex-wrap items-center gap-3 rounded-lg border bg-background p-4">
       <Select value={id} onValueChange={setSelectedInstance}><SelectTrigger className="w-72" aria-label="对接实例"><SelectValue placeholder="选择 SPD-PR 实例" /></SelectTrigger><SelectContent>{instances.data?.map(i => <SelectItem key={i.id} value={i.id}>{i.name} · {i.organization}{i.enabled ? '' : '（停用）'}</SelectItem>)}</SelectContent></Select>
-      {canManage && <><Button onClick={() => openConfig()}>新增实例</Button><Button variant="outline" disabled={!id} onClick={() => openConfig(instances.data?.find(i => i.id === id))}>编辑配置</Button></>}
+      {canManage && (!settingsOnly || settingsTab === 'connection') && <><Button onClick={() => openConfig()}>新增实例</Button><Button variant="outline" disabled={!id} onClick={() => openConfig(instances.data?.find(i => i.id === id))}>编辑配置</Button></>}
       <Button variant="outline" disabled={loading} onClick={() => { client.invalidateQueries({ predicate: q => String(q.queryKey[0]).startsWith('spd-') }); }}>刷新</Button>
     </div>
     {error && <p role="alert" className="rounded-lg border border-destructive p-3 text-destructive">{error.message}</p>}
     {loading && <p role="status" className="text-sm text-muted-foreground">正在加载…</p>}
     {!instances.isLoading && !error && !id && <div className="rounded-lg border bg-background p-8 text-center text-muted-foreground">暂无对接实例，请先配置 SPD-PR。</div>}
-    {settingsOnly && <section className="rounded-lg border bg-background p-4"><h2 className="mb-3 font-semibold">SPD-PR连接设置</h2><p className="mb-3 text-sm text-muted-foreground">点击新增实例或编辑配置，直接填写SPD-PR的IP地址／域名和端口。保存后商品下发自动使用新地址。</p><Table><TableHeader><TableRow><TableHead>实例</TableHead><TableHead>机构</TableHead><TableHead>接收地址</TableHead><TableHead>状态</TableHead></TableRow></TableHeader><TableBody>{instances.data?.map(i => <TableRow key={i.id}><TableCell>{i.name}</TableCell><TableCell>{i.organization}</TableCell><TableCell className="break-all">{i.endpoint}</TableCell><TableCell>{i.enabled ? '启用' : '停用'}</TableCell></TableRow>)}</TableBody></Table></section>}
+    {settingsOnly && settingsTab === 'interface-logs' && id && <OrderReceiveLogs key={id} instanceId={id} />}
+    {settingsOnly && settingsTab === 'connection' && <section className="rounded-lg border bg-background p-4"><h2 className="mb-3 font-semibold">SPD-PR连接设置</h2><p className="mb-3 text-sm text-muted-foreground">点击新增实例或编辑配置，直接填写SPD-PR的IP地址／域名和端口。保存后商品下发自动使用新地址。</p><Table><TableHeader><TableRow><TableHead>实例</TableHead><TableHead>机构</TableHead><TableHead>接收地址</TableHead><TableHead>状态</TableHead></TableRow></TableHeader><TableBody>{instances.data?.map(i => <TableRow key={i.id}><TableCell>{i.name}</TableCell><TableCell>{i.organization}</TableCell><TableCell className="break-all">{i.endpoint}</TableCell><TableCell>{i.enabled ? '启用' : '停用'}</TableCell></TableRow>)}</TableBody></Table></section>}
     {id && !settingsOnly && <Tabs value={tab} onValueChange={setTab}><TabsList className="flex h-auto flex-wrap justify-start"><TabsTrigger value="logs">同步记录</TabsTrigger><TabsTrigger value="masters">供应商与厂家</TabsTrigger><TabsTrigger value="orders">上传采购订单</TabsTrigger><TabsTrigger value="report">采购订购报表</TabsTrigger><TabsTrigger value="phase2">履约与库存</TabsTrigger>{permissions.includes('integration:phase3:read') && <TabsTrigger value="phase3">医院计划与结算</TabsTrigger>}</TabsList>
       <TabsContent value="phase3"><Phase3Management instanceId={id} permissions={permissions} /></TabsContent>
       <TabsContent value="phase2"><Phase2Management instanceId={id} /></TabsContent>

@@ -1,0 +1,15 @@
+ALTER TABLE biz_purchase_plan
+  MODIFY hospital_id BIGINT NULL,
+  MODIFY plan_qty DECIMAL(18,4) NOT NULL,
+  MODIFY unit_price DECIMAL(18,4) NOT NULL DEFAULT 0,
+  ADD COLUMN spd_instance_id CHAR(36) NULL,
+  ADD COLUMN spd_order_no VARCHAR(100) NULL,
+  ADD COLUMN spd_line_id VARCHAR(100) COLLATE utf8mb4_bin NULL,
+  ADD COLUMN spd_order_date DATE NULL,
+  ADD COLUMN spd_order_status VARCHAR(32) NULL,
+  ADD COLUMN spd_supplier_code VARCHAR(100) NULL,
+  ADD COLUMN spd_unit VARCHAR(20) NULL,
+  ADD COLUMN spd_amount DECIMAL(20,4) NULL,
+  ADD COLUMN spd_currency CHAR(3) NULL,
+  ADD COLUMN spd_tax_included BOOLEAN NULL,
+  ADD UNIQUE KEY uk_plan_spd_line (tenant_id, spd_instance_id, spd_order_no, spd_line_id);

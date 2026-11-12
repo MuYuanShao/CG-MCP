@@ -1,5 +1,7 @@
 import { Search, CheckCircle2, Truck, Download, XCircle, LockKeyhole, Settings2, Pencil } from 'lucide-react';
 import { Button } from './ui/button';
+import ImportedPurchaseOrders from './ImportedPurchaseOrders';
+import type { ImportedOrder } from '../lib/importedPurchasePlans';
 
 interface PurchasePlan {
   id: number;
@@ -17,6 +19,12 @@ interface PurchasePlan {
   status: 'draft' | 'pending_approval' | 'rejected' | 'pending_order' | 'partial' | 'completed';
   canApprove: boolean;
   canEdit: boolean;
+  sourceStatus?: string;
+  hospital?: string;
+  supplierCode?: string;
+  amount?: number | null;
+  currency?: string;
+  taxIncluded?: boolean;
 }
 
 interface PlanSearchForm {
@@ -47,6 +55,12 @@ interface PurchasePlansTabProps {
   planSearchForm: PlanSearchForm;
   onUpdatePlanSearchForm: (form: PlanSearchForm) => void;
   onResetPlanSearch: () => void;
+  onRefreshPlans: () => void;
+  importedOrders: ImportedOrder[];
+  showImportedOrders: boolean;
+  canSupply: boolean;
+  creatingSupply: boolean;
+  onCreateSupply: (order: ImportedOrder) => Promise<boolean>;
 }
 
 function getPlanStatusColor(status: string) {
@@ -90,6 +104,13 @@ export default function PurchasePlansTab({
   isLoading,
   planSearchForm,
   onUpdatePlanSearchForm,
+  onResetPlanSearch,
+  onRefreshPlans,
+  importedOrders,
+  showImportedOrders,
+  canSupply,
+  creatingSupply,
+  onCreateSupply,
 }: PurchasePlansTabProps) {
   const selectedPlans = purchasePlans.filter((plan) => selectedPlanRows.includes(plan.id));
   const selectedPlan = selectedPlans[0];
@@ -98,7 +119,7 @@ export default function PurchasePlansTab({
     && selectedPlan !== undefined
     && ['pending_order', 'partial'].includes(selectedPlan.status);
   const canEditSelection = selectedPlans.length === 1 && selectedPlan?.canEdit === true;
-  const selectablePlans = purchasePlans.filter((plan) => plan.status !== 'pending_approval' || plan.canEdit);
+  const selectablePlans = purchasePlans.filter((plan) => !plan.sourceStatus && (plan.status !== 'pending_approval' || plan.canEdit));
   const hasReadOnlyPendingPlans = purchasePlans.some((plan) => plan.status === 'pending_approval' && !plan.canApprove);
 
   return (
@@ -150,14 +171,16 @@ export default function PurchasePlansTab({
           </div>
         </div>
         <div className="flex gap-3">
-          <button className="px-6 py-2 bg-primary text-primary-foreground rounded-lg hover:opacity-90 transition-opacity flex items-center gap-2">
+          <button onClick={onRefreshPlans} className="px-6 py-2 bg-primary text-primary-foreground rounded-lg hover:opacity-90 transition-opacity flex items-center gap-2">
             <Search className="size-4" /> 查询
           </button>
-          <button className="px-6 py-2 border border-border rounded-lg hover:bg-accent transition-colors">重置</button>
+          <button onClick={onResetPlanSearch} className="px-6 py-2 border border-border rounded-lg hover:bg-accent transition-colors">重置</button>
         </div>
       </div>
 
+      {showImportedOrders && <ImportedPurchaseOrders orders={importedOrders} canSupply={canSupply} creating={creatingSupply} onCreateSupply={onCreateSupply} />}
       <div className="p-4 border border-border rounded-lg bg-background">
+        {showImportedOrders && <h2 className="mb-3 font-semibold">本地采购计划</h2>}
         <div className="flex items-center gap-2 flex-wrap">
           <Button variant="outline" onClick={onSubmitPlans} disabled={!canSubmitPlans || isLoading || !selectedPlans.length || selectedPlans.some(plan => plan.status !== 'draft')}>提交审批</Button>
           <button disabled={!canApproveSelection} onClick={onApprovePlans}
@@ -209,7 +232,8 @@ export default function PurchasePlansTab({
                 <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">型号</th>
                 <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">单位</th>
                 <th className="px-4 py-3 text-right text-sm font-medium text-muted-foreground">采购数量</th>
-                <th className="px-4 py-3 text-right text-sm font-medium text-muted-foreground">单价(¥)</th>
+                <th className="px-4 py-3 text-right text-sm font-medium text-muted-foreground">单价</th>
+                <th className="px-4 py-3 text-right text-sm font-medium text-muted-foreground">金额</th>
                 <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">注册证号</th>
                 <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">厂家</th>
                 <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">计划时间</th>
@@ -217,24 +241,25 @@ export default function PurchasePlansTab({
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {!isLoading && !error && purchasePlans.length === 0 && <tr><td colSpan={13} className="px-4 py-8 text-center text-muted-foreground">暂无采购计划数据</td></tr>}
+              {!isLoading && !error && purchasePlans.length === 0 && <tr><td colSpan={14} className="px-4 py-8 text-center text-muted-foreground">暂无采购计划数据</td></tr>}
               {purchasePlans.map((plan) => (
                 <tr key={plan.id} className="hover:bg-accent/50 transition-colors">
                   <td className="px-4 py-3">
                     <input type="checkbox" checked={selectedPlanRows.includes(plan.id)} onChange={() => onSelectPlanRow(plan.id)}
-                      disabled={plan.status === 'pending_approval' && !plan.canEdit}
-                      aria-label={plan.status === 'pending_approval' && !plan.canEdit ? `${plan.orderNo} 仅可查看` : `选择 ${plan.orderNo}`}
-                      title={plan.status === 'pending_approval' && !plan.canEdit ? '未配置审批角色或用户，仅可查看' : undefined}
+                      disabled={Boolean(plan.sourceStatus) || (plan.status === 'pending_approval' && !plan.canEdit)}
+                      aria-label={plan.sourceStatus || (plan.status === 'pending_approval' && !plan.canEdit) ? `${plan.orderNo} 仅可查看` : `选择 ${plan.orderNo}`}
+                      title={plan.sourceStatus ? '由 SPD-PR 同步，仅可查看' : plan.status === 'pending_approval' && !plan.canEdit ? '未配置审批角色或用户，仅可查看' : undefined}
                       className="size-4 rounded border-border disabled:cursor-not-allowed disabled:opacity-40" />
                   </td>
-                  <td className="px-4 py-3 font-medium">{plan.orderNo}</td>
+                  <td className="px-4 py-3 font-medium">{plan.orderNo}{plan.sourceStatus && <div className="text-xs text-muted-foreground">{['SPD-PR', plan.hospital, plan.supplierCode].filter(Boolean).join(' · ')}</div>}</td>
                   <td className="px-4 py-3 text-sm font-mono">{plan.productCode}</td>
                   <td className="px-4 py-3">{plan.productName}</td>
                   <td className="px-4 py-3 text-sm">{plan.spec}</td>
                   <td className="px-4 py-3 text-sm">{plan.model}</td>
                   <td className="px-4 py-3 text-sm">{plan.unit}</td>
                   <td className="px-4 py-3 text-right">{plan.planQty}</td>
-                  <td className="px-4 py-3 text-right font-medium">{plan.unitPrice.toFixed(2)}</td>
+                  <td className="px-4 py-3 text-right font-medium">{plan.unitPrice.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}</td>
+                  <td className="px-4 py-3 text-right">{plan.amount == null ? '—' : Number(plan.amount).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}{plan.currency ? ' ' + plan.currency : ''}{plan.sourceStatus && plan.taxIncluded != null && <div className="text-xs text-muted-foreground">{plan.taxIncluded ? '含税' : '未税'}</div>}</td>
                   <td className="px-4 py-3 text-sm font-mono">{plan.registrationNo}</td>
                   <td className="px-4 py-3 text-sm">{plan.manufacturer}</td>
                   <td className="px-4 py-3 text-sm">{plan.planDate}</td>
